@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
+import { ControlRuntime, type RoutinePhase } from "./control-runtime.js";
 import { SafetyController } from "./safety.js";
 import type { LovenseClient } from "./lovense-client.js";
 import { LOVENSE_FUNCTIONS, type FunctionAction, type LovenseFunction, type SafetyLimits } from "./types.js";
@@ -32,12 +33,12 @@ function toolError(error: unknown) {
   return { isError: true, content: [{ type: "text" as const, text: message }] };
 }
 
-export function createLovenseMcpServer(client: LovenseClient, safety: SafetyController, limits: SafetyLimits): McpServer {
+export function createLovenseMcpServer(client: LovenseClient, runtime: ControlRuntime, safety: SafetyController, limits: SafetyLimits): McpServer {
   const server = new McpServer(
-    { name: "lilazul-lovense", version: "0.1.0" },
+    { name: "blackvow", version: "0.2.0" },
     {
       instructions:
-        "Call lovense_list_devices before control and never guess device functions. Use control tools only in response to the user's request. A duration of 0 means continue until stopped and should only be used when the user explicitly asks for that. lovense_stop is always available.",
+        "Call lovense_list_devices before control and never guess device functions. Use control tools only with the owner's active consent. A duration of 0 means continue until stopped and should only be used when explicitly requested. lovense_stop is always available and cancels an active routine.",
     },
   );
 
@@ -98,21 +99,11 @@ export function createLovenseMcpServer(client: LovenseClient, safety: SafetyCont
     },
     async ({ actions, durationSeconds, deviceIds, continueOtherFunctions }) => {
       try {
-        const validated = safety.validateControl(
+        const validated = runtime.control(
           actions as FunctionAction[],
           durationSeconds,
           deviceIds || [],
-          client.status().deviceInfo,
-        );
-        client.sendCommand(
-          {
-            command: "Function",
-            action: validated.action,
-            timeSec: validated.durationSeconds,
-            stopPrevious: continueOtherFunctions ? 0 : 1,
-            apiVer: 1,
-          },
-          validated.targetIds,
+          continueOtherFunctions,
         );
         const durationText = validated.durationSeconds === 0 ? "until stopped" : `for ${validated.durationSeconds} seconds`;
         return textResult(`Queued ${validated.action} ${durationText}.`, {
@@ -121,6 +112,70 @@ export function createLovenseMcpServer(client: LovenseClient, safety: SafetyCont
           durationSeconds: validated.durationSeconds,
           deviceIds: validated.targetIds,
           warnings: validated.warnings,
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "lovense_adjust",
+    {
+      title: "Adjust Lovense relative to its last set level",
+      description: "Use this to raise or lower one or more functions from the last level BLACKVOW set. If the level is unknown, establish it first with lovense_control.",
+      inputSchema: {
+        changes: z.array(z.object({
+          function: functionSchema,
+          delta: z.number().int().min(-20).max(20).refine((value) => value !== 0, "Delta cannot be zero."),
+        })).min(1).max(5),
+        durationSeconds: z.number().min(0).max(limits.maxCommandSeconds).refine((value) => value === 0 || value >= 2, "Use 0 or at least 2 seconds."),
+        deviceIds: z.array(z.string()).max(16).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
+    },
+    async ({ changes, durationSeconds, deviceIds }) => {
+      try {
+        const result = runtime.adjust(changes, deviceIds || [], durationSeconds);
+        const durationText = durationSeconds === 0 ? "until stopped" : `for ${durationSeconds} seconds`;
+        return textResult(`Queued a relative adjustment ${durationText}.`, {
+          accepted: true,
+          durationSeconds,
+          deviceIds: result.targetIds,
+          resultingActions: result.resultingActions,
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "lovense_run_routine",
+    {
+      title: "Run a multi-phase Lovense routine",
+      description: "Use this when the owner asks for an authored sequence of control phases that must continue reliably between chat turns. A new control command or lovense_stop cancels it.",
+      inputSchema: {
+        phases: z.array(z.object({
+          actions: z.array(z.object({
+            function: functionSchema,
+            intensity: z.number().int().min(0).max(20).optional(),
+            strokeMin: z.number().int().min(0).max(100).optional(),
+            strokeMax: z.number().int().min(0).max(100).optional(),
+          })).min(1).max(5),
+          durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds),
+        })).min(1).max(24),
+        repeat: z.number().int().min(1).max(50).optional().default(1),
+        deviceIds: z.array(z.string()).max(16).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
+    },
+    async ({ phases, repeat, deviceIds }) => {
+      try {
+        const result = runtime.startRoutine(phases as RoutinePhase[], repeat, deviceIds || []);
+        return textResult(`Started a ${result.phaseCount}-phase routine for ${result.totalDurationSeconds} seconds.`, {
+          accepted: true,
+          ...result,
         });
       } catch (error) {
         return toolError(error);
@@ -146,6 +201,7 @@ export function createLovenseMcpServer(client: LovenseClient, safety: SafetyCont
       try {
         const ids = deviceIds || [];
         const selectedIds = safety.validatePattern(functions as LovenseFunction[], ids, client.status().deviceInfo);
+        runtime.patternStarted();
         const shortNames: Record<string, string> = {
           Vibrate: "v", Rotate: "r", Pump: "p", Thrusting: "t", Fingering: "f", Suction: "s", Depth: "d", Oscillate: "o",
         };
@@ -184,6 +240,7 @@ export function createLovenseMcpServer(client: LovenseClient, safety: SafetyCont
     async ({ preset, durationSeconds, deviceIds }) => {
       try {
         const ids = safety.validatePattern([], deviceIds || [], client.status().deviceInfo);
+        runtime.patternStarted();
         client.sendCommand({ command: "Preset", name: preset, timeSec: durationSeconds, apiVer: 1 }, ids);
         const durationText = durationSeconds === 0 ? "until stopped" : `for ${durationSeconds} seconds`;
         return textResult(`Queued the ${preset} preset ${durationText}.`, {
@@ -207,10 +264,8 @@ export function createLovenseMcpServer(client: LovenseClient, safety: SafetyCont
     },
     async ({ deviceIds }) => {
       try {
-        const connectedIds = (client.status().deviceInfo?.toys || []).filter((toy) => toy.connected).map((toy) => toy.id);
         const ids = deviceIds || [];
-        if (ids.some((id) => !connectedIds.includes(id))) throw new Error("A requested device is not connected.");
-        client.sendCommand({ command: "Function", action: "Stop", timeSec: 0, apiVer: 1 }, ids);
+        runtime.stop(ids);
         return textResult("Lovense stop command queued.", { stopped: true, deviceIds: ids });
       } catch (error) {
         return toolError(error);
@@ -228,12 +283,15 @@ interface SessionEntry {
 
 export class McpHttpHandler {
   private readonly sessions = new Map<string, SessionEntry>();
+  private readonly runtime: ControlRuntime;
 
   constructor(
     private readonly client: LovenseClient,
     private readonly safety: SafetyController,
     private readonly limits: SafetyLimits,
-  ) {}
+  ) {
+    this.runtime = new ControlRuntime(client, safety, limits);
+  }
 
   async handle(req: Request, res: Response): Promise<void> {
     try {
@@ -243,7 +301,7 @@ export class McpHttpHandler {
 
       if (!entry && req.method === "POST" && !id && isInitializeRequest(req.body)) {
         let transport!: StreamableHTTPServerTransport;
-        const server = createLovenseMcpServer(this.client, this.safety, this.limits);
+        const server = createLovenseMcpServer(this.client, this.runtime, this.safety, this.limits);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newId) => {
@@ -275,6 +333,7 @@ export class McpHttpHandler {
   }
 
   async close(): Promise<void> {
+    this.runtime.close();
     await Promise.all([...this.sessions.values()].map((entry) => entry.transport.close()));
     this.sessions.clear();
   }

@@ -1,4 +1,4 @@
-# Lilazul Lovense Connector
+# BLACKVOW Lovense Connector
 
 Un conector privado de Lovense para ChatGPT y otros clientes MCP. Está pensado para una sola dueña por despliegue: detecta varios dispositivos, adapta las funciones a cada modelo y solo puede actuar sobre juguetes encendidos y conectados a su Lovense Remote.
 
@@ -25,6 +25,8 @@ Un conector privado de Lovense para ChatGPT y otros clientes MCP. Está pensado 
 - Selección de un dispositivo, varios o todos los autorizados.
 - Vibración, rotación, bombeo, thrust, fingering, succión, profundidad, stroke y oscilación cuando el dispositivo los admite.
 - Patrones personalizados y presets oficiales: `pulse`, `wave`, `fireworks` y `earthquake`.
+- Ajustes relativos seguros desde el último nivel explícito conocido.
+- Rutinas de varias fases ejecutadas por el servidor para que continúen entre turnos del chat.
 - Batería, conexión, nombre, apodo y capacidades por dispositivo.
 - OAuth 2.1 con PKCE para ChatGPT.
 - Validación de dispositivo, función e intensidad antes de cada orden.
@@ -98,6 +100,8 @@ Railway recomienda generar secretos en la plantilla, describir cada variable y c
 - `lovense_status`: conexión y estado de autorización.
 - `lovense_list_devices`: dispositivos, batería y capacidades.
 - `lovense_control`: una o varias funciones durante el tiempo solicitado o hasta que la usuaria diga que pare.
+- `lovense_adjust`: sube o baja desde el último nivel que BLACKVOW estableció sin adivinar el estado del juguete.
+- `lovense_run_routine`: ejecuta una secuencia validada de fases y repeticiones en el servidor.
 - `lovense_play_pattern`: secuencia personalizada de intensidades.
 - `lovense_play_preset`: preset oficial.
 - `lovense_stop`: parada inmediata de uno o todos los dispositivos.

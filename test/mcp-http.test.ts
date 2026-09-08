@@ -46,7 +46,7 @@ test("MCP initializes and publishes the safety-first tool surface", async () => 
     });
     const body = await tools.text();
     assert.equal(tools.status, 200);
-    for (const name of ["lovense_status", "lovense_list_devices", "lovense_control", "lovense_play_pattern", "lovense_play_preset", "lovense_stop"]) {
+    for (const name of ["lovense_status", "lovense_list_devices", "lovense_control", "lovense_adjust", "lovense_run_routine", "lovense_play_pattern", "lovense_play_preset", "lovense_stop"]) {
       assert.match(body, new RegExp(name));
     }
   } finally {

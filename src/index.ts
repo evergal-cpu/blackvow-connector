@@ -113,8 +113,8 @@ function authorizePage(fields: Record<string, string>, error = "", language: UiL
     .filter(([name]) => name !== "owner_secret" && name !== "decision")
     .map(([name, value]) => `<input type="hidden" name="${html(name)}" value="${html(value)}">`).join("");
   const copy = language === "es"
-    ? { title: "Autorizar Lilazul Lovense", heading: "¿Conectar ChatGPT?", intro: "ChatGPT solicita permiso para detectar y controlar los dispositivos Lovense que tú conectes a Lovense Remote. Si el juguete está apagado o desconectado, no podrá actuar.", label: "Tu Owner Key", approve: "Autorizar mi ChatGPT", deny: "Cancelar", note: "La clave se envía solo a tu propia instancia de Railway mediante HTTPS." }
-    : { title: "Authorize Lilazul Lovense", heading: "Connect ChatGPT?", intro: "ChatGPT is requesting permission to detect and control the Lovense devices you connect to Lovense Remote. If the toy is turned off or disconnected, it cannot be controlled.", label: "Your Owner Key", approve: "Authorize my ChatGPT", deny: "Cancel", note: "The key is sent only to your own Railway instance over HTTPS." };
+    ? { title: "Autorizar BLACKVOW", heading: "¿Conectar BLACKVOW a ChatGPT?", intro: "ChatGPT solicita permiso para detectar y controlar los dispositivos Lovense que tú conectes a Lovense Remote. Si el juguete está apagado o desconectado, no podrá actuar.", label: "Tu Owner Key", approve: "Autorizar mi ChatGPT", deny: "Cancelar", note: "La clave se envía solo a tu propia instancia de Railway mediante HTTPS." }
+    : { title: "Authorize BLACKVOW", heading: "Connect BLACKVOW to ChatGPT?", intro: "ChatGPT is requesting permission to detect and control the Lovense devices you connect to Lovense Remote. If the toy is turned off or disconnected, it cannot be controlled.", label: "Your Owner Key", approve: "Authorize my ChatGPT", deny: "Cancel", note: "The key is sent only to your own Railway instance over HTTPS." };
   return `<!doctype html><html lang="${language}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${copy.title}</title><style>color-scheme:dark;*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#35205f,#0d0a18 55%);color:#f8f5ff;font:16px/1.5 system-ui}.card{width:min(480px,100%);padding:28px;border-radius:24px;background:#17112bd9;border:1px solid #ffffff22;box-shadow:0 24px 80px #0007}h1{margin-top:0;color:#c5a9ff}label{display:block;color:#c9c0dc;margin:18px 0 7px}input,button{width:100%;padding:13px;border-radius:12px;border:1px solid #ffffff2d;background:#0e0a1d;color:#fff;font:inherit}button{margin-top:12px;background:linear-gradient(135deg,#704dc5,#287b9e);font-weight:700;cursor:pointer}.deny{background:#251d38}.error{color:#ff9ab0}.small{color:#bdb4d3;font-size:.9rem}</style></head><body><main class="card"><h1>${copy.heading}</h1><p>${copy.intro}</p>${error ? `<p class="error">${html(error)}</p>` : ""}<form method="post" action="/oauth/authorize">${hidden}<label for="owner_secret">${copy.label}</label><input id="owner_secret" name="owner_secret" type="password" autocomplete="current-password" required><button name="decision" value="approve">${copy.approve}</button><button class="deny" name="decision" value="deny">${copy.deny}</button></form><p class="small">${copy.note}</p></main></body></html>`;
 }
 
@@ -250,7 +250,7 @@ for (const method of ["get", "post", "delete"] as const) {
 }
 
 const httpServer = app.listen(config.port, "0.0.0.0", () => {
-  console.log(`Lilazul Lovense connector listening on port ${config.port}.`);
+  console.log(`BLACKVOW connector listening on port ${config.port}.`);
 });
 
 lovense.start().catch((error) => {
