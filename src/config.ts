@@ -51,7 +51,7 @@ export function loadConfig(): AppConfig {
     stateEncryptionKey,
     stateFile: resolve(process.env.STATE_FILE?.trim() || ".data/lovense-state.enc"),
     safety: {
-      maxCommandSeconds: integer("MAX_COMMAND_SECONDS", 3600, 2, 86400),
+      maxCommandSeconds: integer("MAX_COMMAND_SECONDS", 7200, 2, 86400),
     },
   };
 }

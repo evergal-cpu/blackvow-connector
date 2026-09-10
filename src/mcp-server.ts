@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
-import { ControlRuntime, type RoutinePhase } from "./control-runtime.js";
+import { ControlRuntime, type LiveTimelinePhase, type RoutinePhase } from "./control-runtime.js";
 import { SafetyController } from "./safety.js";
 import type { LovenseClient } from "./lovense-client.js";
 import { LOVENSE_FUNCTIONS, type FunctionAction, type LovenseFunction, type SafetyLimits } from "./types.js";
@@ -34,11 +34,14 @@ function toolError(error: unknown) {
 }
 
 export function createLovenseMcpServer(client: LovenseClient, runtime: ControlRuntime, safety: SafetyController, limits: SafetyLimits): McpServer {
+  const defaultLiveSeconds = Math.min(3600, limits.maxCommandSeconds);
+  const defaultLiveMinutes = Math.round(defaultLiveSeconds / 60);
+  const maximumLiveMinutes = Math.round(limits.maxCommandSeconds / 60);
   const server = new McpServer(
-    { name: "blackvow", version: "0.2.0" },
+    { name: "blackvow", version: "0.3.0" },
     {
       instructions:
-        "Call lovense_list_devices before control and never guess device functions. Use control tools only with the owner's active consent. A duration of 0 means continue until stopped and should only be used when explicitly requested. lovense_stop is always available and cancels an active routine.",
+        "Call lovense_list_devices before control and never guess device functions. Use control tools only with the owner's active consent. Prefer the bounded live-session tools when control should continue across chat turns and be extended or adjusted without an unintended gap. A duration of 0 means continue until stopped and should only be used when explicitly requested. lovense_stop is always available and cancels active control.",
     },
   );
 
@@ -55,6 +58,10 @@ export function createLovenseMcpServer(client: LovenseClient, runtime: ControlRu
       return textResult(status.deviceInfo?.online ? "Lovense Remote is online." : "Lovense Remote is offline.", {
         connectionState: status.connectionState,
         appOnline: status.deviceInfo?.online || false,
+        liveControl: {
+          direct: runtime.liveStatus(),
+          timeline: runtime.timelineStatus(),
+        },
       });
     },
   );
@@ -112,6 +119,135 @@ export function createLovenseMcpServer(client: LovenseClient, runtime: ControlRu
           durationSeconds: validated.durationSeconds,
           deviceIds: validated.targetIds,
           warnings: validated.warnings,
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "lovense_live_status",
+    {
+      title: "Check BLACKVOW live-session state",
+      description: "Read whether BLACKVOW currently owns a bounded live-control lane, its safety deadline, remaining time, devices, and last lifecycle event. This never actuates a device.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+    },
+    async () => {
+      const timeline = runtime.timelineStatus();
+      const direct = runtime.liveStatus();
+      const active = timeline.active ? timeline : direct;
+      return textResult(active.active ? "A BLACKVOW live session is active." : "No BLACKVOW live session is active.", {
+        active: Boolean(active.active),
+        lane: timeline.active ? "timeline" : direct.active ? "direct" : "idle",
+        state: active,
+      });
+    },
+  );
+
+  server.registerTool(
+    "lovense_live_start",
+    {
+      title: "Start a bounded BLACKVOW live session",
+      description: `Start or replace a finite live-control lane that continues while conversation proceeds. Use named phases with repeating steps for a full-session timeline, or actions for one sustained level. The default is ${defaultLiveMinutes} minutes and the configured ceiling is ${maximumLiveMinutes} minutes.`,
+      inputSchema: {
+        actions: z.array(
+          z.object({
+            function: functionSchema.describe("A function announced for the selected device."),
+            intensity: z.number().int().min(0).max(20).optional().describe("0-20, except Pump and Depth which use 0-3. Omit for Stroke."),
+            strokeMin: z.number().int().min(0).max(100).optional().describe("Stroke minimum; only for Stroke."),
+            strokeMax: z.number().int().min(0).max(100).optional().describe("Stroke maximum; only for Stroke and at least 20 above minimum."),
+          }),
+        ).min(1).max(5).optional().describe("One sustained action set. Omit when phases are supplied."),
+        durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds).optional().default(defaultLiveSeconds)
+          .describe(`Finite safety deadline for a sustained action set; defaults to ${defaultLiveMinutes} minutes.`),
+        phases: z.array(z.object({
+          name: z.string().min(1).max(64),
+          durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds),
+          steps: z.array(z.object({
+            actions: z.array(z.object({
+              function: functionSchema,
+              intensity: z.number().int().min(0).max(20).optional(),
+              strokeMin: z.number().int().min(0).max(100).optional(),
+              strokeMax: z.number().int().min(0).max(100).optional(),
+            })).min(1).max(5),
+            holdSeconds: z.number().int().min(0).max(60),
+            transitionSeconds: z.number().int().min(0).max(30).optional().default(0),
+          })).min(1).max(100),
+        })).min(1).max(10).optional().describe("Named full-session phases. Each phase repeats its steps for its own duration."),
+        deviceIds: z.array(z.string()).max(16).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
+    },
+    async ({ actions, durationSeconds, phases, deviceIds }) => {
+      try {
+        if (phases?.length) {
+          if (actions?.length) throw new Error("Choose either named phases or one sustained action set, not both.");
+          const snapshot = runtime.startTimeline(phases as LiveTimelinePhase[], deviceIds || []);
+          return textResult("Started a bounded, named BLACKVOW live timeline.", { accepted: true, ...snapshot });
+        }
+        if (!actions?.length) throw new Error("Provide named phases or one sustained action set.");
+        const snapshot = runtime.startLive(actions as FunctionAction[], durationSeconds, deviceIds || []);
+        return textResult(`Started a bounded BLACKVOW live session for ${durationSeconds} seconds.`, {
+          accepted: true,
+          ...snapshot,
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "lovense_live_adjust",
+    {
+      title: "Adjust the active BLACKVOW live session",
+      description: "Replace active live-session levels relative to BLACKVOW's known state while preserving the same safety deadline and avoiding an intentional zero-output gap.",
+      inputSchema: {
+        changes: z.array(z.object({
+          function: functionSchema,
+          delta: z.number().int().min(-20).max(20).refine((value) => value !== 0, "Delta cannot be zero."),
+        })).min(1).max(5),
+        deviceIds: z.array(z.string()).max(16).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
+    },
+    async ({ changes, deviceIds }) => {
+      try {
+        const timeline = runtime.timelineStatus();
+        const snapshot = timeline.active
+          ? runtime.adjustTimeline(changes, deviceIds || [])
+          : runtime.adjustLive(changes, deviceIds || []);
+        return textResult("Adjusted the active BLACKVOW live session and its remaining timeline without changing the safety deadline.", {
+          accepted: true,
+          ...snapshot,
+        });
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "lovense_live_extend",
+    {
+      title: "Extend the active BLACKVOW live session",
+      description: "Add time to the current live session and refresh the active device command without an intentional zero-output gap. The complete session remains bounded by the configured safety ceiling.",
+      inputSchema: {
+        additionalSeconds: z.number().int().min(1).max(limits.maxCommandSeconds),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
+    },
+    async ({ additionalSeconds }) => {
+      try {
+        const timeline = runtime.timelineStatus();
+        const snapshot = timeline.active
+          ? runtime.extendTimeline(additionalSeconds)
+          : runtime.extendLive(additionalSeconds);
+        return textResult(`Extended the active BLACKVOW live session by ${additionalSeconds} seconds.`, {
+          accepted: true,
+          ...snapshot,
         });
       } catch (error) {
         return toolError(error);
@@ -201,7 +337,6 @@ export function createLovenseMcpServer(client: LovenseClient, runtime: ControlRu
       try {
         const ids = deviceIds || [];
         const selectedIds = safety.validatePattern(functions as LovenseFunction[], ids, client.status().deviceInfo);
-        runtime.patternStarted();
         const shortNames: Record<string, string> = {
           Vibrate: "v", Rotate: "r", Pump: "p", Thrusting: "t", Fingering: "f", Suction: "s", Depth: "d", Oscillate: "o",
         };
@@ -215,6 +350,7 @@ export function createLovenseMcpServer(client: LovenseClient, runtime: ControlRu
           },
           selectedIds,
         );
+        runtime.patternStarted();
         const durationText = durationSeconds === 0 ? "until stopped" : `for ${durationSeconds} seconds`;
         return textResult(`Queued a pattern ${durationText} on ${selectedIds.length} device(s).`, {
           accepted: true, deviceIds: selectedIds, durationSeconds,
@@ -240,8 +376,8 @@ export function createLovenseMcpServer(client: LovenseClient, runtime: ControlRu
     async ({ preset, durationSeconds, deviceIds }) => {
       try {
         const ids = safety.validatePattern([], deviceIds || [], client.status().deviceInfo);
-        runtime.patternStarted();
         client.sendCommand({ command: "Preset", name: preset, timeSec: durationSeconds, apiVer: 1 }, ids);
+        runtime.patternStarted();
         const durationText = durationSeconds === 0 ? "until stopped" : `for ${durationSeconds} seconds`;
         return textResult(`Queued the ${preset} preset ${durationText}.`, {
           accepted: true, preset, durationSeconds, deviceIds: ids,

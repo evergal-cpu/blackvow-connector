@@ -27,6 +27,8 @@ Un conector privado de Lovense para ChatGPT y otros clientes MCP. Está pensado 
 - Patrones personalizados y presets oficiales: `pulse`, `wave`, `fireworks` y `earthquake`.
 - Ajustes relativos seguros desde el último nivel explícito conocido.
 - Rutinas de varias fases ejecutadas por el servidor para que continúen entre turnos del chat.
+- Sesiones en vivo de 60 minutos por defecto, ampliables hasta 120 minutos, con fases nombradas, patrones internos repetibles y posición casi en tiempo real.
+- Ajuste del patrón restante y extensiones seguras sin introducir una parada intencional entre órdenes.
 - Batería, conexión, nombre, apodo y capacidades por dispositivo.
 - OAuth 2.1 con PKCE para ChatGPT.
 - Validación de dispositivo, función e intensidad antes de cada orden.
@@ -85,7 +87,7 @@ El proceso no carga `.env` automáticamente. En desarrollo, importa esas variabl
 | `PORT` | Plantilla | `8080`, el puerto interno que Railway usa también para comprobar que el servicio está listo. |
 | `STATE_FILE` | Plantilla | `/data/lovense-state.enc` cuando la plantilla adjunta un volumen. |
 
-Variable opcional: `MAX_COMMAND_SECONDS` (3600) limita una duración numérica accidentalmente enorme. El valor `0` sigue significando “hasta que la usuaria diga que pare”.
+Variable opcional: `MAX_COMMAND_SECONDS` (7200) limita una duración numérica accidentalmente enorme. Las sesiones en vivo usan 3600 segundos por defecto y pueden ampliarse hasta ese techo de dos horas. El valor `0` sigue significando “hasta que la usuaria diga que pare” para las herramientas directas compatibles.
 
 ## Plantilla de Railway
 
@@ -104,6 +106,10 @@ Railway recomienda generar secretos en la plantilla, describir cada variable y c
 - `lovense_run_routine`: ejecuta una secuencia validada de fases y repeticiones en el servidor.
 - `lovense_play_pattern`: secuencia personalizada de intensidades.
 - `lovense_play_preset`: preset oficial.
+- `lovense_live_status`: posición, fase, paso, cambio siguiente y tiempo restante de la sesión activa.
+- `lovense_live_start`: inicia un nivel sostenido o una sesión completa de fases nombradas y patrones repetibles; usa 60 minutos por defecto.
+- `lovense_live_adjust`: cambia la intensidad actual y el resto del patrón activo sin reiniciar el reloj de seguridad.
+- `lovense_live_extend`: amplía la sesión activa sin superar el techo de dos horas.
 - `lovense_stop`: parada inmediata de uno o todos los dispositivos.
 
 ## Seguridad y privacidad
