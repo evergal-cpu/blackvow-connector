@@ -35,8 +35,9 @@ export interface LovenseDeviceInfo {
 }
 
 export interface PersistedState {
-  version: 1;
+  version: 1 | 2;
   deviceInfo: LovenseDeviceInfo | null;
+  deviceProfiles?: DeviceControlProfile[];
 }
 
 export interface FunctionAction {
@@ -48,6 +49,15 @@ export interface FunctionAction {
 
 export interface SafetyLimits {
   maxCommandSeconds: number;
+}
+
+export type AttachmentProfile = "straight" | "g_curve";
+
+export interface DeviceControlProfile {
+  deviceId: string;
+  alias: string;
+  attachment?: AttachmentProfile;
+  ceilings: Partial<Record<LovenseFunction, number>>;
 }
 
 export interface AppConfig {

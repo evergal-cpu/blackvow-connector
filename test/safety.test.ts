@@ -22,9 +22,9 @@ test("works whenever Lovense Remote and the device are connected", () => {
   assert.deepEqual(result.targetIds, [ferri.id]);
 });
 
-test("supports multiple devices without a separate arming window", () => {
+test("supports an explicitly named multi-device group", () => {
   const safety = new SafetyController({ maxCommandSeconds: 3600 });
-  const result = safety.validateControl([{ function: "Vibrate", intensity: 20 }], 8, [], devices);
+  const result = safety.validateControl([{ function: "Vibrate", intensity: 20 }], 8, [ferri.id, vulse.id], devices);
   assert.deepEqual(result.targetIds, [ferri.id, vulse.id]);
 });
 
@@ -51,11 +51,11 @@ test("validates stroke range", () => {
   const strokeDevices = { ...devices, toys: [strokeToy] };
   const safety = new SafetyController({ maxCommandSeconds: 3600 });
   assert.throws(
-    () => safety.validateControl([{ function: "Stroke", strokeMin: 20, strokeMax: 30 }], 5, [], strokeDevices),
+    () => safety.validateControl([{ function: "Stroke", strokeMin: 20, strokeMax: 30 }], 5, [strokeToy.id], strokeDevices),
     /at least 20/,
   );
   assert.equal(
-    safety.validateControl([{ function: "Stroke", strokeMin: 10, strokeMax: 60 }], 5, [], strokeDevices).action,
+    safety.validateControl([{ function: "Stroke", strokeMin: 10, strokeMax: 60 }], 5, [strokeToy.id], strokeDevices).action,
     "Stroke:10-60",
   );
 });

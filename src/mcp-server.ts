@@ -4,429 +4,190 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
-import { ControlRuntime, type LiveTimelinePhase, type RoutinePhase } from "./control-runtime.js";
-import { SafetyController } from "./safety.js";
+import { EnsembleRuntime, type EnsemblePlan } from "./ensemble-runtime.js";
 import type { LovenseClient } from "./lovense-client.js";
-import { LOVENSE_FUNCTIONS, type FunctionAction, type LovenseFunction, type SafetyLimits } from "./types.js";
+import { LOVENSE_FUNCTIONS, type LovenseFunction, type SafetyLimits } from "./types.js";
 
 const functionSchema = z.enum(LOVENSE_FUNCTIONS);
-const patternFunctionSchema = z.enum([
-  "Vibrate",
-  "Rotate",
-  "Pump",
-  "Thrusting",
-  "Fingering",
-  "Suction",
-  "Depth",
-  "Oscillate",
-]);
+const actionSchema = z.object({
+  function: functionSchema,
+  intensity: z.number().int().min(0).max(20).optional()
+    .describe("BLACKVOW level. Usually 0-20; Pump and Depth are limited to 0-3."),
+  strokeMin: z.number().int().min(0).max(100).optional(),
+  strokeMax: z.number().int().min(0).max(100).optional(),
+});
+const stepSchema = z.object({
+  actions: z.array(actionSchema).min(1).max(5),
+  holdSeconds: z.number().int().min(0).max(60),
+  transitionSeconds: z.number().int().min(0).max(30).optional().default(0),
+});
+const trackSchema = z.object({
+  device: z.string().min(1).describe("Explicit device alias such as lush or spinel, or an exact ID from lovense_list_devices."),
+  steps: z.array(stepSchema).min(1).max(100),
+});
 
 function textResult(message: string, structuredContent?: Record<string, unknown>) {
-  return {
-    content: [{ type: "text" as const, text: message }],
-    ...(structuredContent ? { structuredContent } : {}),
-  };
+  return { content: [{ type: "text" as const, text: message }], ...(structuredContent ? { structuredContent } : {}) };
 }
 
 function toolError(error: unknown) {
-  const message = error instanceof Error ? error.message : "The Lovense command failed.";
+  const message = error instanceof Error ? error.message : "The BLACKVOW request failed.";
   return { isError: true, content: [{ type: "text" as const, text: message }] };
 }
 
-export function createLovenseMcpServer(client: LovenseClient, runtime: ControlRuntime, safety: SafetyController, limits: SafetyLimits): McpServer {
+function planFrom(input: { durationSeconds: number; tracks: unknown[]; resumeOnReconnect: boolean }): EnsemblePlan {
+  return input as EnsemblePlan;
+}
+
+export function createLovenseMcpServer(client: LovenseClient, ensemble: EnsembleRuntime, limits: SafetyLimits): McpServer {
   const defaultLiveSeconds = Math.min(3600, limits.maxCommandSeconds);
-  const defaultLiveMinutes = Math.round(defaultLiveSeconds / 60);
-  const maximumLiveMinutes = Math.round(limits.maxCommandSeconds / 60);
   const server = new McpServer(
-    { name: "blackvow", version: "0.3.0" },
-    {
-      instructions:
-        "Call lovense_list_devices before control and never guess device functions. Use control tools only with the owner's active consent. Prefer the bounded live-session tools when control should continue across chat turns and be extended or adjusted without an unintended gap. A duration of 0 means continue until stopped and should only be used when explicitly requested. lovense_stop is always available and cancels active control.",
-    },
+    { name: "blackvow", version: "0.4.0" },
+    { instructions: "Discover devices before control. Every physical action must name an explicit device alias or ID and requires the owner's active consent. Use preview for a dry run. BLACKVOW levels are mapped inside configured per-channel ceilings. Hold preserves a session; stop_device clears one target; stop_all clears everything. Never claim physical motion is confirmed because the Standard API confirms dispatch acceptance only." },
   );
 
-  server.registerTool(
-    "lovense_status",
-    {
-      title: "Check Lovense safety status",
-      description: "Use this when you need to know whether Lovense Remote and the connected devices are online.",
-      inputSchema: {},
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
-    },
-    async () => {
-      const status = client.status();
-      return textResult(status.deviceInfo?.online ? "Lovense Remote is online." : "Lovense Remote is offline.", {
-        connectionState: status.connectionState,
-        appOnline: status.deviceInfo?.online || false,
-        liveControl: {
-          direct: runtime.liveStatus(),
-          timeline: runtime.timelineStatus(),
-        },
-      });
-    },
-  );
+  server.registerTool("lovense_status", {
+    title: "Check BLACKVOW connection and session status",
+    description: "Use this when you need connection state plus the truthful current BLACKVOW session state. This never actuates a device.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async () => {
+    const status = client.status();
+    return textResult(status.deviceInfo?.online ? "Lovense Remote is online." : "Lovense Remote is offline.", {
+      connectionState: status.connectionState, connectionError: status.lastError || null,
+      appOnline: status.deviceInfo?.online || false, session: ensemble.status(),
+    });
+  });
 
-  server.registerTool(
-    "lovense_list_devices",
-    {
-      title: "List connected Lovense devices",
-      description: "Use this when you need the connected device IDs, battery levels, and supported functions before choosing a control command.",
-      inputSchema: {},
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
-    },
-    async () => {
-      const devices = client.status().deviceInfo?.toys || [];
-      return textResult(
-        devices.length ? `Found ${devices.length} Lovense device${devices.length === 1 ? "" : "s"}.` : "No Lovense devices are connected.",
-        { devices },
-      );
-    },
-  );
+  server.registerTool("lovense_list_devices", {
+    title: "Discover BLACKVOW devices and channels",
+    description: "Use this before planning control to read each device separately with its ID, alias, battery, connection, announced channels, attachment profile, and ceilings. This never actuates a device.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async () => textResult("Returned BLACKVOW device capabilities.", { devices: ensemble.listDevices() }));
 
-  server.registerTool(
-    "lovense_control",
-    {
-      title: "Control Lovense functions",
-      description: "Use this when the owner explicitly asks to run one or more supported functions on one or several connected devices for a short duration.",
-      inputSchema: {
-        actions: z.array(
-          z.object({
-            function: functionSchema.describe("A function announced for the selected device."),
-            intensity: z.number().int().min(0).max(20).optional().describe("0-20, except Pump and Depth which use 0-3. Omit for Stroke."),
-            strokeMin: z.number().int().min(0).max(100).optional().describe("Stroke minimum; only for Stroke."),
-            strokeMax: z.number().int().min(0).max(100).optional().describe("Stroke maximum; only for Stroke and at least 20 above minimum."),
-          }),
-        ).min(1).max(5),
-        durationSeconds: z.number().min(0).max(limits.maxCommandSeconds).refine((value) => value === 0 || value >= 2, "Use 0 or at least 2 seconds.")
-          .describe("How long to run. Use 0 only when the user explicitly asks to continue until stopped."),
-        deviceIds: z.array(z.string()).max(16).optional().describe("Specific device IDs. Omit to use every device authorized by the owner."),
-        continueOtherFunctions: z.boolean().optional().default(false).describe("Keep functions from the previous command running on the same device."),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
+  server.registerTool("lovense_configure_device", {
+    title: "Configure a BLACKVOW device profile",
+    description: "Use this to assign a stable alias, declare a Spinel attachment, or set per-channel percentage ceilings. This changes BLACKVOW configuration but sends no physical command.",
+    inputSchema: {
+      device: z.string().min(1), alias: z.string().min(1).max(40).optional(),
+      attachment: z.enum(["straight", "g_curve"]).optional(),
+      ceilings: z.array(z.object({ channel: functionSchema, percent: z.number().int().min(0).max(100) })).max(9).optional(),
     },
-    async ({ actions, durationSeconds, deviceIds, continueOtherFunctions }) => {
-      try {
-        const validated = runtime.control(
-          actions as FunctionAction[],
-          durationSeconds,
-          deviceIds || [],
-          continueOtherFunctions,
-        );
-        const durationText = validated.durationSeconds === 0 ? "until stopped" : `for ${validated.durationSeconds} seconds`;
-        return textResult(`Queued ${validated.action} ${durationText}.`, {
-          accepted: true,
-          action: validated.action,
-          durationSeconds: validated.durationSeconds,
-          deviceIds: validated.targetIds,
-          warnings: validated.warnings,
-        });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async ({ device, alias, attachment, ceilings }) => {
+    try {
+      const ceilingMap = Object.fromEntries((ceilings || []).map((entry) => [entry.channel, entry.percent])) as Partial<Record<LovenseFunction, number>>;
+      const profile = ensemble.configureProfile({ device, alias, attachment, ceilings: ceilingMap });
+      return textResult("Updated the BLACKVOW device profile. No physical command was sent.", { profile, physicalCommandSent: false });
+    } catch (error) { return toolError(error); }
+  });
 
-  server.registerTool(
-    "lovense_live_status",
-    {
-      title: "Check BLACKVOW live-session state",
-      description: "Read whether BLACKVOW currently owns a bounded live-control lane, its safety deadline, remaining time, devices, and last lifecycle event. This never actuates a device.",
-      inputSchema: {},
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  server.registerTool("lovense_preview", {
+    title: "Preview a coordinated BLACKVOW session",
+    description: "Use this to validate explicit devices, independent channel curves, attachment rules, ceilings, and mapped output before starting. This never actuates a device.",
+    inputSchema: {
+      durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds).optional().default(defaultLiveSeconds),
+      tracks: z.array(trackSchema).min(1).max(16), resumeOnReconnect: z.boolean().optional().default(false),
     },
-    async () => {
-      const timeline = runtime.timelineStatus();
-      const direct = runtime.liveStatus();
-      const active = timeline.active ? timeline : direct;
-      return textResult(active.active ? "A BLACKVOW live session is active." : "No BLACKVOW live session is active.", {
-        active: Boolean(active.active),
-        lane: timeline.active ? "timeline" : direct.active ? "direct" : "idle",
-        state: active,
-      });
-    },
-  );
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async (input) => {
+    try { return textResult("Validated the BLACKVOW session preview. No physical command was sent.", ensemble.preview(planFrom(input))); }
+    catch (error) { return toolError(error); }
+  });
 
-  server.registerTool(
-    "lovense_live_start",
-    {
-      title: "Start a bounded BLACKVOW live session",
-      description: `Start or replace a finite live-control lane that continues while conversation proceeds. Use named phases with repeating steps for a full-session timeline, or actions for one sustained level. The default is ${defaultLiveMinutes} minutes and the configured ceiling is ${maximumLiveMinutes} minutes.`,
-      inputSchema: {
-        actions: z.array(
-          z.object({
-            function: functionSchema.describe("A function announced for the selected device."),
-            intensity: z.number().int().min(0).max(20).optional().describe("0-20, except Pump and Depth which use 0-3. Omit for Stroke."),
-            strokeMin: z.number().int().min(0).max(100).optional().describe("Stroke minimum; only for Stroke."),
-            strokeMax: z.number().int().min(0).max(100).optional().describe("Stroke maximum; only for Stroke and at least 20 above minimum."),
-          }),
-        ).min(1).max(5).optional().describe("One sustained action set. Omit when phases are supplied."),
-        durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds).optional().default(defaultLiveSeconds)
-          .describe(`Finite safety deadline for a sustained action set; defaults to ${defaultLiveMinutes} minutes.`),
-        phases: z.array(z.object({
-          name: z.string().min(1).max(64),
-          durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds),
-          steps: z.array(z.object({
-            actions: z.array(z.object({
-              function: functionSchema,
-              intensity: z.number().int().min(0).max(20).optional(),
-              strokeMin: z.number().int().min(0).max(100).optional(),
-              strokeMax: z.number().int().min(0).max(100).optional(),
-            })).min(1).max(5),
-            holdSeconds: z.number().int().min(0).max(60),
-            transitionSeconds: z.number().int().min(0).max(30).optional().default(0),
-          })).min(1).max(100),
-        })).min(1).max(10).optional().describe("Named full-session phases. Each phase repeats its steps for its own duration."),
-        deviceIds: z.array(z.string()).max(16).optional(),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
+  server.registerTool("lovense_live_start", {
+    title: "Start a coordinated BLACKVOW live session",
+    description: `Use this only with active consent to start independent, synchronized device tracks in the background. Every track names a device. Default duration is ${Math.round(defaultLiveSeconds / 60)} minutes; ceiling is ${Math.round(limits.maxCommandSeconds / 60)} minutes.`,
+    inputSchema: {
+      durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds).optional().default(defaultLiveSeconds),
+      tracks: z.array(trackSchema).min(1).max(16),
+      resumeOnReconnect: z.boolean().optional().default(false).describe("When true, a disconnect hold may resume automatically after every target reconnects. Default false never silently resumes."),
     },
-    async ({ actions, durationSeconds, phases, deviceIds }) => {
-      try {
-        if (phases?.length) {
-          if (actions?.length) throw new Error("Choose either named phases or one sustained action set, not both.");
-          const snapshot = runtime.startTimeline(phases as LiveTimelinePhase[], deviceIds || []);
-          return textResult("Started a bounded, named BLACKVOW live timeline.", { accepted: true, ...snapshot });
-        }
-        if (!actions?.length) throw new Error("Provide named phases or one sustained action set.");
-        const snapshot = runtime.startLive(actions as FunctionAction[], durationSeconds, deviceIds || []);
-        return textResult(`Started a bounded BLACKVOW live session for ${durationSeconds} seconds.`, {
-          accepted: true,
-          ...snapshot,
-        });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
+  }, async (input) => {
+    try { return textResult("Started the coordinated BLACKVOW live session.", ensemble.start(planFrom(input))); }
+    catch (error) { return toolError(error); }
+  });
 
-  server.registerTool(
-    "lovense_live_adjust",
-    {
-      title: "Adjust the active BLACKVOW live session",
-      description: "Replace active live-session levels relative to BLACKVOW's known state while preserving the same safety deadline and avoiding an intentional zero-output gap.",
-      inputSchema: {
-        changes: z.array(z.object({
-          function: functionSchema,
-          delta: z.number().int().min(-20).max(20).refine((value) => value !== 0, "Delta cannot be zero."),
-        })).min(1).max(5),
-        deviceIds: z.array(z.string()).max(16).optional(),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
-    },
-    async ({ changes, deviceIds }) => {
-      try {
-        const timeline = runtime.timelineStatus();
-        const snapshot = timeline.active
-          ? runtime.adjustTimeline(changes, deviceIds || [])
-          : runtime.adjustLive(changes, deviceIds || []);
-        return textResult("Adjusted the active BLACKVOW live session and its remaining timeline without changing the safety deadline.", {
-          accepted: true,
-          ...snapshot,
-        });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+  server.registerTool("lovense_live_status", {
+    title: "Read the BLACKVOW live lane",
+    description: "Use this to read targets, commanded channels, battery, connection, dispatch acceptance, confirmation limits, hold state, and deadline. This never actuates a device.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async () => textResult("Returned the BLACKVOW live-session state.", ensemble.status()));
 
-  server.registerTool(
-    "lovense_live_extend",
-    {
-      title: "Extend the active BLACKVOW live session",
-      description: "Add time to the current live session and refresh the active device command without an intentional zero-output gap. The complete session remains bounded by the configured safety ceiling.",
-      inputSchema: {
-        additionalSeconds: z.number().int().min(1).max(limits.maxCommandSeconds),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
-    },
-    async ({ additionalSeconds }) => {
-      try {
-        const timeline = runtime.timelineStatus();
-        const snapshot = timeline.active
-          ? runtime.extendTimeline(additionalSeconds)
-          : runtime.extendLive(additionalSeconds);
-        return textResult(`Extended the active BLACKVOW live session by ${additionalSeconds} seconds.`, {
-          accepted: true,
-          ...snapshot,
-        });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+  server.registerTool("lovense_live_adjust", {
+    title: "Adjust explicit BLACKVOW device channels",
+    description: "Use this only with active consent to shift named channels on named devices while preserving the session clock and coordinated score.",
+    inputSchema: { changes: z.array(z.object({
+      device: z.string().min(1), function: functionSchema,
+      delta: z.number().int().min(-20).max(20).refine((value) => value !== 0, "Delta cannot be zero."),
+    })).min(1).max(32) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
+  }, async ({ changes }) => {
+    try { return textResult("Adjusted the explicit BLACKVOW targets without changing the deadline.", ensemble.adjust(changes)); }
+    catch (error) { return toolError(error); }
+  });
 
-  server.registerTool(
-    "lovense_adjust",
-    {
-      title: "Adjust Lovense relative to its last set level",
-      description: "Use this to raise or lower one or more functions from the last level BLACKVOW set. If the level is unknown, establish it first with lovense_control.",
-      inputSchema: {
-        changes: z.array(z.object({
-          function: functionSchema,
-          delta: z.number().int().min(-20).max(20).refine((value) => value !== 0, "Delta cannot be zero."),
-        })).min(1).max(5),
-        durationSeconds: z.number().min(0).max(limits.maxCommandSeconds).refine((value) => value === 0 || value >= 2, "Use 0 or at least 2 seconds."),
-        deviceIds: z.array(z.string()).max(16).optional(),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
-    },
-    async ({ changes, durationSeconds, deviceIds }) => {
-      try {
-        const result = runtime.adjust(changes, deviceIds || [], durationSeconds);
-        const durationText = durationSeconds === 0 ? "until stopped" : `for ${durationSeconds} seconds`;
-        return textResult(`Queued a relative adjustment ${durationText}.`, {
-          accepted: true,
-          durationSeconds,
-          deviceIds: result.targetIds,
-          resultingActions: result.resultingActions,
-        });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+  server.registerTool("lovense_live_extend", {
+    title: "Extend the BLACKVOW session",
+    description: "Use this only with active consent to add time while preserving the current coordinated score, up to the configured ceiling.",
+    inputSchema: { additionalSeconds: z.number().int().min(1).max(limits.maxCommandSeconds) },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
+  }, async ({ additionalSeconds }) => {
+    try { return textResult("Extended the BLACKVOW session.", ensemble.extend(additionalSeconds)); }
+    catch (error) { return toolError(error); }
+  });
 
-  server.registerTool(
-    "lovense_run_routine",
-    {
-      title: "Run a multi-phase Lovense routine",
-      description: "Use this when the owner asks for an authored sequence of control phases that must continue reliably between chat turns. A new control command or lovense_stop cancels it.",
-      inputSchema: {
-        phases: z.array(z.object({
-          actions: z.array(z.object({
-            function: functionSchema,
-            intensity: z.number().int().min(0).max(20).optional(),
-            strokeMin: z.number().int().min(0).max(100).optional(),
-            strokeMax: z.number().int().min(0).max(100).optional(),
-          })).min(1).max(5),
-          durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds),
-        })).min(1).max(24),
-        repeat: z.number().int().min(1).max(50).optional().default(1),
-        deviceIds: z.array(z.string()).max(16).optional(),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
-    },
-    async ({ phases, repeat, deviceIds }) => {
-      try {
-        const result = runtime.startRoutine(phases as RoutinePhase[], repeat, deviceIds || []);
-        return textResult(`Started a ${result.phaseCount}-phase routine for ${result.totalDurationSeconds} seconds.`, {
-          accepted: true,
-          ...result,
-        });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+  server.registerTool("lovense_hold", {
+    title: "Hold BLACKVOW output but remember the session",
+    description: "Use this immediately when the owner asks to hold or pause. It sends Stop to every session target but preserves the score and remaining time for an explicit resume.",
+    inputSchema: {},
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async () => {
+    try { return textResult("BLACKVOW is on hold and remembers the session.", ensemble.hold()); }
+    catch (error) { return toolError(error); }
+  });
 
-  server.registerTool(
-    "lovense_play_pattern",
-    {
-      title: "Play a Lovense pattern",
-      description: "Use this when the owner asks for a custom repeating intensity pattern on supported functions and selected devices.",
-      inputSchema: {
-        functions: z.array(patternFunctionSchema).min(1).max(8),
-        strengths: z.array(z.number().int().min(0).max(20)).min(1).max(50),
-        intervalMs: z.number().int().min(100).max(5000).default(1000),
-        durationSeconds: z.number().min(0).max(limits.maxCommandSeconds).refine((value) => value === 0 || value >= 2, "Use 0 or at least 2 seconds."),
-        deviceIds: z.array(z.string()).max(16).optional(),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
-    },
-    async ({ functions, strengths, intervalMs, durationSeconds, deviceIds }) => {
-      try {
-        const ids = deviceIds || [];
-        const selectedIds = safety.validatePattern(functions as LovenseFunction[], ids, client.status().deviceInfo);
-        const shortNames: Record<string, string> = {
-          Vibrate: "v", Rotate: "r", Pump: "p", Thrusting: "t", Fingering: "f", Suction: "s", Depth: "d", Oscillate: "o",
-        };
-        client.sendCommand(
-          {
-            command: "Pattern",
-            rule: `V:1;F:${functions.map((fn) => shortNames[fn]).join(",")};S:${intervalMs}#`,
-            strength: strengths.join(";"),
-            timeSec: durationSeconds,
-            apiVer: 2,
-          },
-          selectedIds,
-        );
-        runtime.patternStarted();
-        const durationText = durationSeconds === 0 ? "until stopped" : `for ${durationSeconds} seconds`;
-        return textResult(`Queued a pattern ${durationText} on ${selectedIds.length} device(s).`, {
-          accepted: true, deviceIds: selectedIds, durationSeconds,
-        });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+  server.registerTool("lovense_resume", {
+    title: "Resume a held BLACKVOW session",
+    description: "Use this only with fresh active consent to resume a held score after verifying every target is connected.",
+    inputSchema: {},
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
+  }, async () => {
+    try { return textResult("Resumed the held BLACKVOW session.", ensemble.resume()); }
+    catch (error) { return toolError(error); }
+  });
 
-  server.registerTool(
-    "lovense_play_preset",
-    {
-      title: "Play a Lovense preset",
-      description: "Use this when the owner asks for one of Lovense Remote's built-in pulse, wave, fireworks, or earthquake patterns.",
-      inputSchema: {
-        preset: z.enum(["pulse", "wave", "fireworks", "earthquake"]),
-        durationSeconds: z.number().min(0).max(limits.maxCommandSeconds).refine((value) => value === 0 || value >= 2, "Use 0 or at least 2 seconds."),
-        deviceIds: z.array(z.string()).max(16).optional(),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
-    },
-    async ({ preset, durationSeconds, deviceIds }) => {
-      try {
-        const ids = safety.validatePattern([], deviceIds || [], client.status().deviceInfo);
-        client.sendCommand({ command: "Preset", name: preset, timeSec: durationSeconds, apiVer: 1 }, ids);
-        runtime.patternStarted();
-        const durationText = durationSeconds === 0 ? "until stopped" : `for ${durationSeconds} seconds`;
-        return textResult(`Queued the ${preset} preset ${durationText}.`, {
-          accepted: true, preset, durationSeconds, deviceIds: ids,
-        });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+  server.registerTool("lovense_stop_device", {
+    title: "Stop and clear one BLACKVOW device",
+    description: "Use this immediately to stop one explicitly named device and remove only its track from the session.",
+    inputSchema: { device: z.string().min(1) },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async ({ device }) => {
+    try { return textResult(`Stopped and cleared ${device}.`, ensemble.stopDevice(device)); }
+    catch (error) { return toolError(error); }
+  });
 
-  server.registerTool(
-    "lovense_stop",
-    {
-      title: "Stop Lovense immediately",
-      description: "Use this whenever the user asks to stop, pause, cancel, or expresses discomfort.",
-      inputSchema: {
-        deviceIds: z.array(z.string()).max(16).optional().describe("Specific device IDs. Omit to stop every connected device."),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: true },
-    },
-    async ({ deviceIds }) => {
-      try {
-        const ids = deviceIds || [];
-        runtime.stop(ids);
-        return textResult("Lovense stop command queued.", { stopped: true, deviceIds: ids });
-      } catch (error) {
-        return toolError(error);
-      }
-    },
-  );
+  server.registerTool("lovense_stop_all", {
+    title: "Stop and clear all BLACKVOW output",
+    description: "Use this immediately for Stop all, Red, discomfort, or cancellation. It stops every connected BLACKVOW device and clears the session.",
+    inputSchema: {},
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+  }, async () => textResult("Stopped and cleared all BLACKVOW output.", ensemble.stopAll()));
 
   return server;
 }
 
-interface SessionEntry {
-  transport: StreamableHTTPServerTransport;
-  server: McpServer;
-}
+interface SessionEntry { transport: StreamableHTTPServerTransport; server: McpServer }
 
 export class McpHttpHandler {
   private readonly sessions = new Map<string, SessionEntry>();
-  private readonly runtime: ControlRuntime;
+  private readonly ensemble: EnsembleRuntime;
 
-  constructor(
-    private readonly client: LovenseClient,
-    private readonly safety: SafetyController,
-    private readonly limits: SafetyLimits,
-  ) {
-    this.runtime = new ControlRuntime(client, safety, limits);
+  constructor(private readonly client: LovenseClient, private readonly limits: SafetyLimits) {
+    this.ensemble = new EnsembleRuntime(client, limits);
   }
 
   async handle(req: Request, res: Response): Promise<void> {
@@ -434,42 +195,30 @@ export class McpHttpHandler {
       const sessionId = req.headers["mcp-session-id"];
       const id = typeof sessionId === "string" ? sessionId : undefined;
       let entry = id ? this.sessions.get(id) : undefined;
-
       if (!entry && req.method === "POST" && !id && isInitializeRequest(req.body)) {
         let transport!: StreamableHTTPServerTransport;
-        const server = createLovenseMcpServer(this.client, this.runtime, this.safety, this.limits);
+        const server = createLovenseMcpServer(this.client, this.ensemble, this.limits);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (newId) => {
-            this.sessions.set(newId, { transport, server });
-          },
+          onsessioninitialized: (newId) => { this.sessions.set(newId, { transport, server }); },
         });
-        transport.onclose = () => {
-          if (transport.sessionId) this.sessions.delete(transport.sessionId);
-        };
+        transport.onclose = () => { if (transport.sessionId) this.sessions.delete(transport.sessionId); };
         await server.connect(transport);
         entry = { transport, server };
       }
-
       if (!entry) {
-        res.status(id ? 404 : 400).json({
-          jsonrpc: "2.0",
-          error: { code: -32000, message: id ? "Unknown MCP session" : "Initialize the MCP session first" },
-          id: null,
-        });
+        res.status(id ? 404 : 400).json({ jsonrpc: "2.0", error: { code: -32000, message: id ? "Unknown MCP session" : "Initialize the MCP session first" }, id: null });
         return;
       }
       await entry.transport.handleRequest(req, res, req.body);
     } catch (error) {
-      if (!res.headersSent) {
-        res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal MCP error" }, id: null });
-      }
+      if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal MCP error" }, id: null });
       console.error("MCP request failed:", error instanceof Error ? error.message : "unknown error");
     }
   }
 
   async close(): Promise<void> {
-    this.runtime.close();
+    this.ensemble.close();
     await Promise.all([...this.sessions.values()].map((entry) => entry.transport.close()));
     this.sessions.clear();
   }

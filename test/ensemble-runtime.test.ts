@@ -1,0 +1,97 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { EnsembleRuntime } from "../src/ensemble-runtime.js";
+import type { LovenseDeviceInfo } from "../src/types.js";
+
+function harness() {
+  const deviceInfo: LovenseDeviceInfo = {
+    online: true, appType: "remote", appVersion: "test", platform: "test", updatedAt: new Date().toISOString(),
+    toys: [
+      { id: "lush-1", name: "Lush 4", toyType: "lush", nickname: "BLACKVOW", battery: 90, connected: true, capabilities: ["Vibrate"], capabilitySource: "device" },
+      { id: "spinel-1", name: "Spinel", toyType: "spinel", nickname: "Spinel", battery: 82, connected: true, capabilities: ["Vibrate", "Thrusting"], capabilitySource: "device" },
+    ],
+  };
+  const commands: Array<{ command: Record<string, unknown>; targetIds: string[] }> = [];
+  const client = {
+    status: () => ({ connectionState: "connected", lastError: "", deviceInfo }),
+    sendCommand: (command: Record<string, unknown>, targetIds: string[]) => commands.push({ command, targetIds }),
+  };
+  return { runtime: new EnsembleRuntime(client as never, { maxCommandSeconds: 7200 }), commands, deviceInfo };
+}
+
+test("discovery distinguishes Lush and Spinel with announced channels", () => {
+  const { runtime } = harness();
+  const devices = runtime.listDevices();
+  assert.deepEqual(devices.map((device) => device.alias), ["lush", "spinel"]);
+  assert.deepEqual(devices[1]?.supportedChannels, ["Vibrate", "Thrusting"]);
+  runtime.close();
+});
+
+test("Spinel requires an attachment and g_curve rejects vibration", () => {
+  const { runtime } = harness();
+  assert.throws(() => runtime.preview({ durationSeconds: 10, tracks: [{ device: "spinel", steps: [{ actions: [{ function: "Thrusting", intensity: 10 }], holdSeconds: 5 }] }] }), /attachment profile/);
+  runtime.configureProfile({ device: "spinel", attachment: "g_curve" });
+  assert.throws(() => runtime.preview({ durationSeconds: 10, tracks: [{ device: "spinel", steps: [{ actions: [{ function: "Vibrate", intensity: 10 }], holdSeconds: 5 }] }] }), /permits Thrusting only/);
+  runtime.close();
+});
+
+test("preview maps logical levels through per-channel ceilings without dispatch", () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight", ceilings: { Thrusting: 50, Vibrate: 75 } });
+  const preview = runtime.preview({ durationSeconds: 30, tracks: [{ device: "spinel", steps: [{ actions: [{ function: "Thrusting", intensity: 20 }, { function: "Vibrate", intensity: 20 }], holdSeconds: 5 }] }] });
+  const mapped = (((preview.tracks as Array<Record<string, unknown>>)[0]?.steps as Array<Record<string, unknown>>)[0]?.mappedActions as Array<{ intensity: number }>);
+  assert.deepEqual(mapped.map((action) => action.intensity), [10, 15]);
+  assert.equal(commands.length, 0);
+  runtime.close();
+});
+
+test("coordinated session dispatches distinct Lush and Spinel tracks", () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  runtime.start({ durationSeconds: 30, tracks: [
+    { device: "lush", steps: [{ actions: [{ function: "Vibrate", intensity: 7 }], holdSeconds: 5 }] },
+    { device: "spinel", steps: [{ actions: [{ function: "Thrusting", intensity: 14 }, { function: "Vibrate", intensity: 4 }], holdSeconds: 5 }] },
+  ] });
+  assert.deepEqual(commands.slice(0, 2).map((entry) => [entry.targetIds[0], entry.command.action]), [
+    ["lush-1", "Vibrate:7"], ["spinel-1", "Thrusting:14,Vibrate:4"],
+  ]);
+  runtime.close();
+});
+
+test("hold stops output, remembers the score, and explicit resume continues it", () => {
+  const { runtime, commands } = harness();
+  runtime.start({ durationSeconds: 30, tracks: [{ device: "lush", steps: [{ actions: [{ function: "Vibrate", intensity: 9 }], holdSeconds: 5 }] }] });
+  const held = runtime.hold();
+  assert.equal(held.held, true);
+  assert.equal(commands.at(-1)?.command.action, "Stop");
+  const resumed = runtime.resume();
+  assert.equal(resumed.active, true);
+  assert.equal(commands.at(-1)?.command.action, "Vibrate:9");
+  runtime.close();
+});
+
+test("disconnect holds without silent resume by default", async () => {
+  const { runtime, commands, deviceInfo } = harness();
+  runtime.start({ durationSeconds: 30, tracks: [{ device: "lush", steps: [{ actions: [{ function: "Vibrate", intensity: 9 }], holdSeconds: 5 }] }] });
+  deviceInfo.toys[0]!.connected = false;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(runtime.status().held, true);
+  deviceInfo.toys[0]!.connected = true;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(runtime.status().held, true);
+  assert.equal(commands.filter((entry) => entry.command.action === "Vibrate:9").length, 1);
+  runtime.close();
+});
+
+test("stop_device removes only the named track", () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  runtime.start({ durationSeconds: 30, tracks: [
+    { device: "lush", steps: [{ actions: [{ function: "Vibrate", intensity: 7 }], holdSeconds: 5 }] },
+    { device: "spinel", steps: [{ actions: [{ function: "Thrusting", intensity: 14 }], holdSeconds: 5 }] },
+  ] });
+  const status = runtime.stopDevice("spinel");
+  assert.equal((status.targets as unknown[]).length, 1);
+  assert.deepEqual(commands.at(-1)?.targetIds, ["spinel-1"]);
+  runtime.close();
+});

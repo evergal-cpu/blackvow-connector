@@ -7,7 +7,6 @@ import { loadConfig } from "./config.js";
 import { LovenseClient } from "./lovense-client.js";
 import { McpHttpHandler } from "./mcp-server.js";
 import { OAuthService } from "./oauth.js";
-import { SafetyController } from "./safety.js";
 import { EncryptedStateStore } from "./state-store.js";
 
 const config = loadConfig();
@@ -17,14 +16,13 @@ const app = createMcpExpressApp({
   allowedHosts: [...new Set([publicHostname, "localhost", "127.0.0.1", "[::1]"])],
 });
 const store = new EncryptedStateStore(config.stateFile, config.stateEncryptionKey);
-const safety = new SafetyController(config.safety);
 const lovense = new LovenseClient({
   developerToken: config.lovenseDeveloperToken,
   uid: config.lovenseUid,
   platformName: config.lovensePlatformName,
   store,
 });
-const mcp = new McpHttpHandler(lovense, safety, config.safety);
+const mcp = new McpHttpHandler(lovense, config.safety);
 const oauth = new OAuthService(config.publicBaseUrl, config.oauthSigningKey);
 
 function secureEqual(left: string, right: string): boolean {

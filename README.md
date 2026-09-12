@@ -17,18 +17,21 @@ Un conector privado de Lovense para ChatGPT y otros clientes MCP. Está pensado 
 5. Copia la URL `/mcp` en ChatGPT. ChatGPT abre OAuth y pide la Owner Key una sola vez.
 6. Para usarlo cualquier día, enciende el juguete, conéctalo a Lovense Remote y pídeselo a la IA.
 
-**PARAR TODO** y la herramienta `lovense_stop` detienen los dispositivos inmediatamente.
+**PARAR TODO / RED** y la herramienta `lovense_stop_all` detienen y limpian todos los dispositivos inmediatamente.
 
 ## Funciones
 
 - Descubrimiento en vivo de uno o varios juguetes conectados.
-- Selección de un dispositivo, varios o todos los autorizados.
+- Selección siempre explícita por alias (`lush`, `spinel`) o ID; nunca se omite el dispositivo por accidente.
 - Vibración, rotación, bombeo, thrust, fingering, succión, profundidad, stroke y oscilación cuando el dispositivo los admite.
 - Patrones personalizados y presets oficiales: `pulse`, `wave`, `fireworks` y `earthquake`.
 - Ajustes relativos seguros desde el último nivel explícito conocido.
-- Rutinas de varias fases ejecutadas por el servidor para que continúen entre turnos del chat.
-- Sesiones en vivo de 60 minutos por defecto, ampliables hasta 120 minutos, con fases nombradas, patrones internos repetibles y posición casi en tiempo real.
-- Ajuste del patrón restante y extensiones seguras sin introducir una parada intencional entre órdenes.
+- Sesiones coordinadas con una pista independiente por dispositivo: Lush y Spinel pueden seguir curvas distintas en el mismo reloj.
+- Sesiones en vivo de 60 minutos por defecto, ampliables hasta 120 minutos, ejecutadas por el servidor entre turnos del chat.
+- Ajuste y extensión sin introducir una parada intencional; `hold` detiene la salida pero conserva la partitura.
+- Vista previa seca que valida y muestra el mapeo completo sin enviar ninguna orden física.
+- Techos opcionales por dispositivo/canal; el valor predeterminado real es 100%, por lo que 20/20 llega al máximo permitido por Lovense Remote.
+- Tres interrupciones separadas: conservar sesión, detener un dispositivo, o detener y limpiar todo.
 - Batería, conexión, nombre, apodo y capacidades por dispositivo.
 - OAuth 2.1 con PKCE para ChatGPT.
 - Validación de dispositivo, función e intensidad antes de cada orden.
@@ -52,10 +55,10 @@ La lista y los rangos proceden de la [Standard API oficial de Lovense](https://d
 | Velvo | Vibrate + Rotate + Oscillate |
 | Vulse | Vibrate + Thrusting |
 | Solace, Solace Pro, Gravity y Lovense Sex Machine | Thrusting + Stroke + Depth |
-| Spinel | Vibrate + Thrusting + Stroke |
+| Spinel | Vibrate + Thrusting; además exige declarar `straight` o `g_curve` antes del control |
 | Edge y Synth | Vibrate |
 
-El calor de modelos como Spinel no se expone porque `Heat` no figura entre las acciones de la Standard API. Mission 2 reacciona a profundidad mediante TouchSense, pero eso no lo convierte en un dispositivo con motor `Thrusting`. Consulta [docs/DEVICE_CAPABILITIES.md](docs/DEVICE_CAPABILITIES.md) para los rangos y el criterio de detección.
+Con Spinel, `straight` permite `Vibrate` y `Thrusting`; `g_curve` permite solo `Thrusting`. El producto también ofrece calor y Turbo en la app, pero BLACKVOW no los expone porque `Heat` y Turbo no figuran entre las acciones ordinarias documentadas de la Standard API. Consulta [docs/DEVICE_CAPABILITIES.md](docs/DEVICE_CAPABILITIES.md).
 
 ## Desarrollo local
 
@@ -99,18 +102,18 @@ Railway recomienda generar secretos en la plantilla, describir cada variable y c
 
 ## Herramientas MCP
 
-- `lovense_status`: conexión y estado de autorización.
-- `lovense_list_devices`: dispositivos, batería y capacidades.
-- `lovense_control`: una o varias funciones durante el tiempo solicitado o hasta que la usuaria diga que pare.
-- `lovense_adjust`: sube o baja desde el último nivel que BLACKVOW estableció sin adivinar el estado del juguete.
-- `lovense_run_routine`: ejecuta una secuencia validada de fases y repeticiones en el servidor.
-- `lovense_play_pattern`: secuencia personalizada de intensidades.
-- `lovense_play_preset`: preset oficial.
-- `lovense_live_status`: posición, fase, paso, cambio siguiente y tiempo restante de la sesión activa.
-- `lovense_live_start`: inicia un nivel sostenido o una sesión completa de fases nombradas y patrones repetibles; usa 60 minutos por defecto.
-- `lovense_live_adjust`: cambia la intensidad actual y el resto del patrón activo sin reiniciar el reloj de seguridad.
-- `lovense_live_extend`: amplía la sesión activa sin superar el techo de dos horas.
-- `lovense_stop`: parada inmediata de uno o todos los dispositivos.
+- `lovense_status`: conexión y estado veraz de la sesión.
+- `lovense_list_devices`: cada dispositivo, alias, batería, conexión, canales anunciados, accesorio y techos.
+- `lovense_configure_device`: declara alias, accesorio Spinel y techos; no mueve ningún dispositivo.
+- `lovense_preview`: valida una sesión coordinada y muestra el mapeo sin salida física.
+- `lovense_live_start`: inicia pistas independientes y sincronizadas; usa 60 minutos por defecto.
+- `lovense_live_status`: objetivos, niveles ordenados, aceptación de despacho, conexión, batería, hold y reloj.
+- `lovense_live_adjust`: cambia canales concretos de dispositivos concretos sin reiniciar el reloj.
+- `lovense_live_extend`: amplía la sesión sin superar dos horas.
+- `lovense_hold`: envía Stop pero conserva la sesión.
+- `lovense_resume`: reanuda solo con consentimiento nuevo y dispositivos conectados.
+- `lovense_stop_device`: detiene y elimina una pista concreta.
+- `lovense_stop_all`: parada RED de todo y limpieza de la sesión.
 
 ## Seguridad y privacidad
 

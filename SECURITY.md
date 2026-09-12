@@ -23,7 +23,7 @@ Se protege frente a:
 - Tres secretos independientes adicionales para OAuth, estado y ruta MCP alternativa.
 - Solo se envían órdenes a dispositivos que Lovense Remote informa como conectados.
 - Cada orden valida funciones y rangos contra las capacidades del juguete.
-- `lovense_stop` está disponible siempre.
+- `lovense_hold`, `lovense_stop_device` y `lovense_stop_all` separan pausa, parada selectiva y RED global.
 - Estado cifrado AES-256-GCM; permisos de archivo `0600` cuando el sistema lo permite.
 - Ningún token se incluye en JavaScript, respuestas públicas ni logs de aplicación.
 - CSP, bloqueo de framing, `no-store`, protección de Host y límites de tamaño JSON/form.

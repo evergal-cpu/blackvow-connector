@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import io from "socket.io-client";
 import { normalizeToy } from "./capabilities.js";
 import { EncryptedStateStore } from "./state-store.js";
-import type { LovenseDeviceInfo, PersistedState } from "./types.js";
+import type { DeviceControlProfile, LovenseDeviceInfo, PersistedState } from "./types.js";
 
 interface LovenseClientOptions {
   developerToken: string;
@@ -42,12 +42,14 @@ export class LovenseClient {
   private deviceInfo: LovenseDeviceInfo | null = null;
   private connectionState: "starting" | "connected" | "disconnected" | "error" = "starting";
   private lastError = "";
+  private readonly deviceProfiles = new Map<string, DeviceControlProfile>();
 
   constructor(private readonly options: LovenseClientOptions) {}
 
   async start(): Promise<void> {
     const saved = await this.options.store.load();
     this.deviceInfo = saved?.deviceInfo || null;
+    for (const profile of saved?.deviceProfiles || []) this.deviceProfiles.set(profile.deviceId, profile);
     try {
       const tokenResult = await postJson("https://api.lovense-api.com/api/basicApi/getToken", {
         token: this.options.developerToken,
@@ -127,8 +129,19 @@ export class LovenseClient {
   }
 
   private async persist(): Promise<void> {
-    const state: PersistedState = { version: 1, deviceInfo: this.deviceInfo };
+    const state: PersistedState = { version: 2, deviceInfo: this.deviceInfo, deviceProfiles: [...this.deviceProfiles.values()] };
     await this.options.store.save(state);
+  }
+
+  controlProfiles(): DeviceControlProfile[] {
+    return [...this.deviceProfiles.values()].map((profile) => ({ ...profile, ceilings: { ...profile.ceilings } }));
+  }
+
+  setControlProfile(profile: DeviceControlProfile): void {
+    this.deviceProfiles.set(profile.deviceId, { ...profile, ceilings: { ...profile.ceilings } });
+    void this.persist().catch((error) => {
+      this.lastError = error instanceof Error ? error.message : "Could not persist the device profile.";
+    });
   }
 
   status(): { connectionState: string; lastError: string; deviceInfo: LovenseDeviceInfo | null } {

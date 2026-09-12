@@ -23,7 +23,7 @@ const CATALOG: Array<[RegExp, LovenseFunction[]]> = [
   [/^(velvo)/i, ["Vibrate", "Rotate", "Oscillate"]],
   [/^(vulse)/i, ["Vibrate", "Thrusting"]],
   [/^(solace|solace pro|gravity|sex machine|mini sex machine)/i, ["Thrusting", "Stroke", "Depth"]],
-  [/^(spinel)/i, ["Vibrate", "Thrusting", "Stroke"]],
+  [/^(spinel)/i, ["Vibrate", "Thrusting"]],
   [
     /^(ferri|lush|hush|domi|gemini|flexer|mission|dolce|ambi|lapis|exomoon|hyphy|edge|synth)/i,
     ["Vibrate"],

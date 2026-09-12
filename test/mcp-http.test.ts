@@ -3,7 +3,6 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { McpHttpHandler } from "../src/mcp-server.js";
-import { SafetyController } from "../src/safety.js";
 
 test("MCP initializes and publishes the safety-first tool surface", async () => {
   const app = createMcpExpressApp({ host: "127.0.0.1" });
@@ -12,7 +11,7 @@ test("MCP initializes and publishes the safety-first tool surface", async () => 
     sendCommand: () => undefined,
   };
   const limits = { maxCommandSeconds: 3600 };
-  const handler = new McpHttpHandler(fakeClient as never, new SafetyController(limits), limits);
+  const handler = new McpHttpHandler(fakeClient as never, limits);
   app.all("/mcp", (req, res) => void handler.handle(req, res));
   const http = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => http.once("listening", resolve));
@@ -47,9 +46,9 @@ test("MCP initializes and publishes the safety-first tool surface", async () => 
     const body = await tools.text();
     assert.equal(tools.status, 200);
     for (const name of [
-      "lovense_status", "lovense_list_devices", "lovense_control", "lovense_adjust", "lovense_run_routine",
-      "lovense_play_pattern", "lovense_play_preset", "lovense_live_status", "lovense_live_start",
-      "lovense_live_adjust", "lovense_live_extend", "lovense_stop",
+      "lovense_status", "lovense_list_devices", "lovense_configure_device", "lovense_preview",
+      "lovense_live_status", "lovense_live_start", "lovense_live_adjust", "lovense_live_extend",
+      "lovense_hold", "lovense_resume", "lovense_stop_device", "lovense_stop_all",
     ]) {
       assert.match(body, new RegExp(name));
     }

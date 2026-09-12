@@ -62,7 +62,9 @@ export class SafetyController {
     if (!devices?.online) throw new Error("Lovense Remote is offline. Open the app and connect the toy first.");
     const connected = devices.toys.filter((toy) => toy.connected);
     if (connected.length === 0) throw new Error("No connected Lovense devices were found.");
-    if (requestedToyIds.length === 0) return connected;
+    if (requestedToyIds.length === 0) {
+      throw new Error("Explicit device targeting is required. Use a device ID returned by lovense_list_devices.");
+    }
     const wanted = [...new Set(requestedToyIds)];
     const byId = new Map(connected.map((toy) => [toy.id, toy]));
     if (wanted.some((id) => !byId.has(id))) throw new Error("A target device is not connected.");
