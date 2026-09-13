@@ -6,16 +6,51 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 import { EnsembleRuntime, type EnsemblePlan } from "./ensemble-runtime.js";
 import type { LovenseClient } from "./lovense-client.js";
-import { LOVENSE_FUNCTIONS, type LovenseFunction, type SafetyLimits } from "./types.js";
+import {
+  DEFAULT_LIVE_SESSION_SECONDS,
+  LOVENSE_FUNCTIONS,
+  MAX_LIVE_SESSION_SECONDS,
+  type LovenseFunction,
+  type SafetyLimits,
+} from "./types.js";
 
 const functionSchema = z.enum(LOVENSE_FUNCTIONS);
-const actionSchema = z.object({
-  function: functionSchema,
-  intensity: z.number().int().min(0).max(20).optional()
-    .describe("BLACKVOW level. Usually 0-20; Pump and Depth are limited to 0-3."),
-  strokeMin: z.number().int().min(0).max(100).optional(),
-  strokeMax: z.number().int().min(0).max(100).optional(),
-});
+function twentyLevelAction<const T extends "Vibrate" | "Rotate" | "Thrusting" | "Fingering" | "Suction" | "Oscillate">(fn: T) {
+  return z.strictObject({
+    function: z.literal(fn),
+    intensity: z.number().int().min(0).max(20)
+      .describe(`${fn} level as a whole number from 0 to 20.`),
+  });
+}
+
+function threeLevelAction<const T extends "Pump" | "Depth">(fn: T) {
+  return z.strictObject({
+    function: z.literal(fn),
+    intensity: z.number().int().min(0).max(3)
+      .describe(`${fn} level as a whole number from 0 to 3.`),
+  });
+}
+
+export const actionSchema = z.discriminatedUnion("function", [
+  twentyLevelAction("Vibrate"),
+  twentyLevelAction("Rotate"),
+  twentyLevelAction("Thrusting"),
+  twentyLevelAction("Fingering"),
+  twentyLevelAction("Suction"),
+  twentyLevelAction("Oscillate"),
+  threeLevelAction("Pump"),
+  threeLevelAction("Depth"),
+  z.strictObject({
+    function: z.literal("Stroke"),
+    strokeMin: z.number().int().min(0).max(100)
+      .describe("Minimum stroke position as a whole number from 0 to 100."),
+    strokeMax: z.number().int().min(0).max(100)
+      .describe("Maximum stroke position as a whole number from 0 to 100, at least 20 above strokeMin."),
+  }).refine((action) => action.strokeMax - action.strokeMin >= 20, {
+    message: "Stroke needs at least 20 points between strokeMin and strokeMax.",
+    path: ["strokeMax"],
+  }),
+]);
 const stepSchema = z.object({
   actions: z.array(actionSchema).min(1).max(5),
   holdSeconds: z.number().int().min(0).max(60),
@@ -40,7 +75,8 @@ function planFrom(input: { durationSeconds: number; tracks: unknown[]; resumeOnR
 }
 
 export function createLovenseMcpServer(client: LovenseClient, ensemble: EnsembleRuntime, limits: SafetyLimits): McpServer {
-  const defaultLiveSeconds = Math.min(3600, limits.maxCommandSeconds);
+  const liveSessionCeiling = Math.min(MAX_LIVE_SESSION_SECONDS, limits.maxCommandSeconds);
+  const defaultLiveSeconds = Math.min(DEFAULT_LIVE_SESSION_SECONDS, liveSessionCeiling);
   const server = new McpServer(
     { name: "blackvow", version: "0.4.0" },
     { instructions: "Discover devices before control. Every physical action must name an explicit device alias or ID and requires the owner's active consent. Use preview for a dry run. BLACKVOW levels are mapped inside configured per-channel ceilings. Hold preserves a session; stop_device clears one target; stop_all clears everything. Never claim physical motion is confirmed because the Standard API confirms dispatch acceptance only." },
@@ -61,7 +97,7 @@ export function createLovenseMcpServer(client: LovenseClient, ensemble: Ensemble
 
   server.registerTool("lovense_list_devices", {
     title: "Discover BLACKVOW devices and channels",
-    description: "Use this before planning control to read each device separately with its ID, alias, battery, connection, announced channels, attachment profile, and ceilings. This never actuates a device.",
+    description: "Use this before planning control to read each device separately with its ID, stable alias, battery, connection, BLACKVOW-controllable API channels, app-only features, capability source, verification state, attachment profile, and ceilings. This never actuates a device.",
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
   }, async () => textResult("Returned BLACKVOW device capabilities.", { devices: ensemble.listDevices() }));
@@ -85,9 +121,10 @@ export function createLovenseMcpServer(client: LovenseClient, ensemble: Ensemble
 
   server.registerTool("lovense_preview", {
     title: "Preview a coordinated BLACKVOW session",
-    description: "Use this to validate explicit devices, independent channel curves, attachment rules, ceilings, and mapped output before starting. This never actuates a device.",
+    description: "Use this to validate explicit devices, independent channel curves, attachment rules, ceilings, and mapped output before starting. An omitted duration uses the default one-hour live-session window: a session envelope in which the score can loop and change, not one unchanging command. Short bounded tests must supply an explicit duration. This never actuates a device.",
     inputSchema: {
-      durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds).optional().default(defaultLiveSeconds),
+      durationSeconds: z.number().int().min(2).max(liveSessionCeiling).optional().default(defaultLiveSeconds)
+        .describe("Session envelope in seconds. Omit for the default one-hour live-session window; maximum 7200 seconds. Supply an explicit duration for short bounded tests."),
       tracks: z.array(trackSchema).min(1).max(16), resumeOnReconnect: z.boolean().optional().default(false),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
@@ -98,9 +135,10 @@ export function createLovenseMcpServer(client: LovenseClient, ensemble: Ensemble
 
   server.registerTool("lovense_live_start", {
     title: "Start a coordinated BLACKVOW live session",
-    description: `Use this only with active consent to start independent, synchronized device tracks in the background. Every track names a device. Default duration is ${Math.round(defaultLiveSeconds / 60)} minutes; ceiling is ${Math.round(limits.maxCommandSeconds / 60)} minutes.`,
+    description: `Use this only with active consent to start independent, synchronized device tracks in the background. Every track names a device. Omitting duration uses the default one-hour live-session window: a session envelope in which the score can loop and change between conversational turns, not one unchanging command for an hour. Short bounded tests must supply an explicit duration. The ceiling is ${Math.round(liveSessionCeiling / 60)} minutes.`,
     inputSchema: {
-      durationSeconds: z.number().int().min(2).max(limits.maxCommandSeconds).optional().default(defaultLiveSeconds),
+      durationSeconds: z.number().int().min(2).max(liveSessionCeiling).optional().default(defaultLiveSeconds)
+        .describe("Session envelope in seconds. Omit for the default one-hour live-session window; maximum 7200 seconds. Supply an explicit duration for short bounded tests."),
       tracks: z.array(trackSchema).min(1).max(16),
       resumeOnReconnect: z.boolean().optional().default(false).describe("When true, a disconnect hold may resume automatically after every target reconnects. Default false never silently resumes."),
     },
@@ -133,7 +171,7 @@ export function createLovenseMcpServer(client: LovenseClient, ensemble: Ensemble
   server.registerTool("lovense_live_extend", {
     title: "Extend the BLACKVOW session",
     description: "Use this only with active consent to add time while preserving the current coordinated score, up to the configured ceiling.",
-    inputSchema: { additionalSeconds: z.number().int().min(1).max(limits.maxCommandSeconds) },
+    inputSchema: { additionalSeconds: z.number().int().min(1).max(liveSessionCeiling) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
   }, async ({ additionalSeconds }) => {
     try { return textResult("Extended the BLACKVOW session.", ensemble.extend(additionalSeconds)); }

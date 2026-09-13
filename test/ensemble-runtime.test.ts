@@ -21,9 +21,30 @@ function harness() {
 
 test("discovery distinguishes Lush and Spinel with announced channels", () => {
   const { runtime } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
   const devices = runtime.listDevices();
   assert.deepEqual(devices.map((device) => device.alias), ["lush", "spinel"]);
   assert.deepEqual(devices[1]?.supportedChannels, ["Vibrate", "Thrusting"]);
+  assert.deepEqual(devices[1]?.apiChannels, ["Vibrate", "Thrusting"]);
+  assert.deepEqual(devices[1]?.verificationState, {
+    apiChannels: "announced",
+    physicalDelivery: "not_recorded_by_connector",
+  });
+  assert.deepEqual((devices[1]?.manualOrAppFeatures as Array<Record<string, unknown>>).map((entry) => [
+    entry.feature, entry.blackvowControllable, entry.availableForCurrentAttachment,
+  ]), [
+    ["Heat", false, true],
+    ["Turbo", false, null],
+  ]);
+  runtime.close();
+});
+
+test("live-session plans never exceed the two-hour ceiling", () => {
+  const { runtime } = harness();
+  assert.throws(() => runtime.preview({
+    durationSeconds: 7201,
+    tracks: [{ device: "lush", steps: [{ actions: [{ function: "Vibrate", intensity: 1 }], holdSeconds: 2 }] }],
+  }), /7200 seconds/);
   runtime.close();
 });
 

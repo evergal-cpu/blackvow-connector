@@ -1,4 +1,10 @@
-import { LOVENSE_FUNCTIONS, type LovenseFunction, type ToyDevice } from "./types.js";
+import {
+  LOVENSE_FUNCTIONS,
+  type AttachmentProfile,
+  type LovenseFunction,
+  type ManualOrAppFeature,
+  type ToyDevice,
+} from "./types.js";
 
 const SHORT_NAMES: Record<string, LovenseFunction> = {
   v: "Vibrate",
@@ -67,4 +73,27 @@ export function normalizeToy(raw: Record<string, unknown>): ToyDevice | null {
     connected: connectedValue === true || connectedValue === 1 || connectedValue === "1",
     ...detected,
   };
+}
+
+export function manualOrAppFeaturesFor(
+  device: Pick<ToyDevice, "name" | "toyType">,
+  attachment?: AttachmentProfile,
+): ManualOrAppFeature[] {
+  if (!/spinel/i.test(`${device.toyType} ${device.name}`)) return [];
+  return [
+    {
+      feature: "Heat",
+      blackvowControllable: false,
+      availableForCurrentAttachment: attachment ? attachment === "straight" : null,
+      attachmentSupport: { straight: "supported", g_curve: "unsupported" },
+      source: "manufacturer_documentation",
+    },
+    {
+      feature: "Turbo",
+      blackvowControllable: false,
+      availableForCurrentAttachment: null,
+      attachmentSupport: { straight: "unverified", g_curve: "unverified" },
+      source: "manufacturer_app",
+    },
+  ];
 }

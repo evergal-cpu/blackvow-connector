@@ -10,7 +10,7 @@ test("MCP initializes and publishes the safety-first tool surface", async () => 
     status: () => ({ connectionState: "connected", lastError: "", deviceInfo: null }),
     sendCommand: () => undefined,
   };
-  const limits = { maxCommandSeconds: 3600 };
+  const limits = { maxCommandSeconds: 7200 };
   const handler = new McpHttpHandler(fakeClient as never, limits);
   app.all("/mcp", (req, res) => void handler.handle(req, res));
   const http = app.listen(0, "127.0.0.1");
@@ -52,6 +52,11 @@ test("MCP initializes and publishes the safety-first tool surface", async () => 
     ]) {
       assert.match(body, new RegExp(name));
     }
+    assert.match(body, /default one-hour live-session window/);
+    assert.match(body, /"durationSeconds":\{"default":3600,[^}]+"maximum":7200\}/);
+    assert.match(body, /"function"[^}]+"const":"Stroke"/);
+    assert.match(body, /"required":\["function","strokeMin","strokeMax"\]/);
+    assert.match(body, /"additionalProperties":false/);
   } finally {
     await handler.close();
     await new Promise<void>((resolve, reject) => http.close((error) => error ? reject(error) : resolve()));

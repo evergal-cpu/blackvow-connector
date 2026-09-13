@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { AppConfig } from "./types.js";
+import { MAX_LIVE_SESSION_SECONDS, type AppConfig } from "./types.js";
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -51,7 +51,7 @@ export function loadConfig(): AppConfig {
     stateEncryptionKey,
     stateFile: resolve(process.env.STATE_FILE?.trim() || ".data/lovense-state.enc"),
     safety: {
-      maxCommandSeconds: integer("MAX_COMMAND_SECONDS", 7200, 2, 86400),
+      maxCommandSeconds: integer("MAX_COMMAND_SECONDS", MAX_LIVE_SESSION_SECONDS, 2, MAX_LIVE_SESSION_SECONDS),
     },
   };
 }

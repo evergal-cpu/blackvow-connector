@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeToy } from "../src/capabilities.js";
+import { manualOrAppFeaturesFor, normalizeToy } from "../src/capabilities.js";
 
 test("uses functions announced by the live device before the catalog", () => {
   const toy = normalizeToy({ id: "1", name: "Future Toy", status: 1, fullFunctionNames: ["Vibrate", "Suction"] });
@@ -19,4 +19,27 @@ test("unknown devices stay explicit instead of inventing functions", () => {
   const toy = normalizeToy({ id: "x", name: "Unreleased Device", connected: true });
   assert.deepEqual(toy?.capabilities, []);
   assert.equal(toy?.capabilitySource, "unknown");
+});
+
+test("Spinel app-only metadata is attachment-aware without exposing control", () => {
+  const spinel = normalizeToy({ id: "s", name: "Spinel", status: 1 })!;
+  const straight = manualOrAppFeaturesFor(spinel, "straight");
+  assert.deepEqual(straight, [
+    {
+      feature: "Heat",
+      blackvowControllable: false,
+      availableForCurrentAttachment: true,
+      attachmentSupport: { straight: "supported", g_curve: "unsupported" },
+      source: "manufacturer_documentation",
+    },
+    {
+      feature: "Turbo",
+      blackvowControllable: false,
+      availableForCurrentAttachment: null,
+      attachmentSupport: { straight: "unverified", g_curve: "unverified" },
+      source: "manufacturer_app",
+    },
+  ]);
+  assert.equal(manualOrAppFeaturesFor(spinel, "g_curve")[0]?.availableForCurrentAttachment, false);
+  assert.deepEqual(manualOrAppFeaturesFor({ name: "Lush 4", toyType: "lush" }, undefined), []);
 });

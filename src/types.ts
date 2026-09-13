@@ -12,6 +12,9 @@ export const LOVENSE_FUNCTIONS = [
 
 export type LovenseFunction = (typeof LOVENSE_FUNCTIONS)[number];
 
+export const DEFAULT_LIVE_SESSION_SECONDS = 3_600;
+export const MAX_LIVE_SESSION_SECONDS = 7_200;
+
 export type CapabilitySource = "device" | "catalog" | "unknown";
 
 export interface ToyDevice {
@@ -52,6 +55,14 @@ export interface SafetyLimits {
 }
 
 export type AttachmentProfile = "straight" | "g_curve";
+
+export interface ManualOrAppFeature {
+  feature: "Heat" | "Turbo";
+  blackvowControllable: false;
+  availableForCurrentAttachment: boolean | null;
+  attachmentSupport: Record<AttachmentProfile, "supported" | "unsupported" | "unverified">;
+  source: "manufacturer_documentation" | "manufacturer_app";
+}
 
 export interface DeviceControlProfile {
   deviceId: string;

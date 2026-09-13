@@ -1,4 +1,6 @@
 import type { LovenseClient } from "./lovense-client.js";
+import { manualOrAppFeaturesFor } from "./capabilities.js";
+import { MAX_LIVE_SESSION_SECONDS } from "./types.js";
 import type {
   AttachmentProfile,
   DeviceControlProfile,
@@ -112,8 +114,14 @@ export class EnsembleRuntime {
         toyType: device.toyType,
         battery: device.battery,
         connected: device.connected,
-        supportedChannels: device.capabilities,
+        supportedChannels: [...device.capabilities],
+        apiChannels: [...device.capabilities],
+        manualOrAppFeatures: manualOrAppFeaturesFor(device, profile.attachment),
         capabilitySource: device.capabilitySource,
+        verificationState: {
+          apiChannels: device.capabilitySource === "device" ? "announced" : device.capabilitySource,
+          physicalDelivery: "not_recorded_by_connector",
+        },
         attachment: profile.attachment || null,
         ceilings: profile.ceilings,
       };
@@ -189,7 +197,8 @@ export class EnsembleRuntime {
     const session = this.requireSession(false);
     if (!Number.isInteger(additionalSeconds) || additionalSeconds < 1) throw new Error("Extension must be a positive whole number of seconds.");
     const total = Math.ceil((session.endsAtMs - session.startedAtMs) / 1000) + additionalSeconds;
-    if (total > this.limits.maxCommandSeconds) throw new Error(`The complete session cannot exceed ${this.limits.maxCommandSeconds} seconds.`);
+    const ceiling = this.liveSessionCeiling();
+    if (total > ceiling) throw new Error(`The complete session cannot exceed ${ceiling} seconds.`);
     session.endsAtMs += additionalSeconds * 1000;
     session.updatedAtMs = Date.now();
     if (!session.pausedAtMs) this.dispatchCurrent(true);
@@ -285,8 +294,9 @@ export class EnsembleRuntime {
   }
 
   private validatePlan(plan: EnsemblePlan, requireConnected: boolean): ResolvedTrack[] {
-    if (!Number.isInteger(plan.durationSeconds) || plan.durationSeconds < 2 || plan.durationSeconds > this.limits.maxCommandSeconds) {
-      throw new Error(`Session duration must be between 2 and ${this.limits.maxCommandSeconds} seconds.`);
+    const ceiling = this.liveSessionCeiling();
+    if (!Number.isInteger(plan.durationSeconds) || plan.durationSeconds < 2 || plan.durationSeconds > ceiling) {
+      throw new Error(`Session duration must be between 2 and ${ceiling} seconds.`);
     }
     if (!plan.tracks.length || plan.tracks.length > 16) throw new Error("Choose between 1 and 16 explicit device tracks.");
     const tracks = plan.tracks.map((track) => {
@@ -509,6 +519,10 @@ export class EnsembleRuntime {
   private clearTimer(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  private liveSessionCeiling(): number {
+    return Math.min(MAX_LIVE_SESSION_SECONDS, this.limits.maxCommandSeconds);
   }
 
   private copyActions(actions: FunctionAction[]): FunctionAction[] {
