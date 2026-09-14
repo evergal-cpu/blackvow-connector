@@ -68,4 +68,12 @@ Lovense Remote 7.71.0 o posterior acepta una matriz de IDs. El conector envía u
 - `lovense_stop_device` detiene y elimina solo la pista nombrada; `lovense_stop_all` detiene y limpia inmediatamente toda la sesión.
 - `lovense_live_status` separa aceptación técnica (`dispatch`/`apiAcceptance`) de actividad física confirmada (`confirmedActive`, siempre `false` sin evidencia externa) y expone un registro acotado por paso con errores de despacho.
 
+## Patrones compilados y capacidades
+
+El argumento alternativo `patternTracks` de Preview y Live Start es únicamente una capa de autoría. Compila `constant`, `pulse`, `wave`, `escalate` y `edge`/`build_deny` a los mismos pasos de `tracks`, antes de ejecutar la resolución de alias, reglas de accesorio, validación de capacidades y techos. Por tanto, un patrón no concede capacidades nuevas ni omite el runtime de sesión.
+
+El compilador exige un dispositivo y uno o más canales explícitos. Admite los canales escalares normalizados 0–20 (`Vibrate`, `Rotate`, `Thrusting`, `Fingering`, `Suction`, `Oscillate`) con valores independientes por canal. Heat y Turbo nunca aparecen en este esquema. Pump/Depth (0–3) y Stroke (mínimo/máximo estructurado) continúan disponibles solo mediante `tracks` canónicos para conservar su semántica real.
+
+La salida compilada hereda sin excepciones los leases hasta el deadline, despachos atómicos completos con `stopPrevious: 0`, ceros explícitos para canales retirados, supresión de salidas consecutivas idénticas y commit transaccional de reemplazos. Los pisos de `pulse`, `wave` y `edge`/`build_deny` son valores expresos; únicamente un cero escrito por quien llama representa una pausa.
+
 Fuentes: [Standard API](https://developer.lovense.com/docs/standard-solutions/standard-api), [Standard Socket API](https://developer.lovense.com/docs/standard-solutions/socket-api) y [catálogo oficial](https://www.lovense.com/compare?toyid=hush).

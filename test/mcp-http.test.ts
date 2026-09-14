@@ -57,6 +57,9 @@ test("MCP initializes and publishes the safety-first tool surface", async () => 
     assert.match(body, /"function"[^}]+"const":"Stroke"/);
     assert.match(body, /"required":\["function","strokeMin","strokeMax"\]/);
     assert.match(body, /"additionalProperties":false/);
+    assert.match(body, /patternTracks/);
+    assert.match(body, /"const":"build_deny"/);
+    assert.match(body, /never send Lovense Pattern commands/);
   } finally {
     await handler.close();
     await new Promise<void>((resolve, reject) => http.close((error) => error ? reject(error) : resolve()));

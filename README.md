@@ -32,6 +32,7 @@ Un conector privado de Lovense para ChatGPT y otros clientes MCP. Está pensado 
 - Control continuo: cada orden conserva un lease hasta el final del sobre de sesión; un cambio de paso reemplaza el estado completo de canales sin una parada previa, y pasos consecutivos idénticos no se vuelven a despachar.
 - Reemplazo transaccional de sesión: la sesión anterior no se borra hasta que la primera orden de la nueva haya sido aceptada; si falla, la anterior sigue siendo la autoridad.
 - Vista previa seca que valida y muestra el mapeo completo sin enviar ninguna orden física.
+- Compilador de patrones neutral y determinista (`constant`, `pulse`, `wave`, `escalate`, `edge`/`build_deny`) que produce las mismas pistas canónicas auditables; nunca envía `Pattern` ni una orden `Function` opaca de larga duración.
 - Techos opcionales por dispositivo/canal; el valor predeterminado real es 100%, por lo que 20/20 llega al máximo permitido por Lovense Remote.
 - Tres interrupciones separadas: conservar sesión, detener un dispositivo, o detener y limpiar todo.
 - Batería, conexión, nombre, apodo y capacidades por dispositivo.
@@ -54,6 +55,25 @@ Las pruebas breves deben proporcionar siempre una duración explícita. La sesi�
 Cada dispositivo tiene una sola pista y cada pista exige un alias estable o ID explícito. Las pistas comparten reloj, pero sus pasos y canales son independientes. Una respuesta `accepted` o `queued` solo describe la aceptación técnica de la orden; la Standard API no confirma movimiento físico. La confirmación corporal o visual debe reportarse por separado.
 
 Cada despacho lleva un lease que cubre el tiempo restante del sobre. Los cambios de paso envían todos los canales de esa pista en una sola orden con `stopPrevious: 0`, incluidos ceros explícitos para canales que deben apagarse. Así, el estado anterior continúa hasta que llega su sustituto; solo un paso explícito con salida cero, `lovense_hold`, una parada, una desconexión o el vencimiento crea una pausa. Pasos consecutivos con la misma salida mapeada no se redispatchan. `lovense_live_status` conserva un registro acotado de hasta 200 despachos/errores con sesión, dispositivo, paso, ciclo, fase, motivo, lease y resultado.
+
+### Compilador de patrones
+
+`lovense_preview` y `lovense_live_start` aceptan exactamente una de estas entradas:
+
+- `tracks`: la partitura canónica existente, sin cambios.
+- `patternTracks`: una descripción breve que BLACKVOW compila primero a esa misma partitura canónica.
+
+Cada `patternTrack` exige un `device` explícito y una lista de `channels` explícitos. Los canales de este nivel son los controles escalares normalizados 0–20: `Vibrate`, `Rotate`, `Thrusting`, `Fingering`, `Suction` y `Oscillate`. Cada canal conserva sus propios valores, de modo que Spinel puede vibrar y hacer thrust a niveles distintos. `Heat`, Turbo y cualquier canal adicional no se habilitan. `Pump`, `Depth` y `Stroke` siguen disponibles en `tracks` canónicos con sus rangos/estructura nativos; no se reinterpretan silenciosamente como 0–20.
+
+| Forma | Semántica compilada por canal | Límites temporales |
+| --- | --- | --- |
+| `constant` | Un nivel `intensity` durante `holdSeconds`; el ciclo se repite dentro del sobre. | hold 1–60 s |
+| `pulse` | Alterna valores explícitos `onIntensity` y `offIntensity`; solo `offIntensity: 0` crea una pausa. | on/off 1–60 s cada uno |
+| `wave` | Interpola de `lowIntensity` a `highIntensity` durante `riseSeconds`, sostiene, baja durante `fallSeconds` y sostiene el piso. | rise/fall 1–30 s; holds 0–60 s |
+| `escalate` | Genera de 2 a 20 niveles redondeados determinísticamente desde `startIntensity` hasta `endIntensity`, con tiempo exacto por etapa y hold final opcional. Al repetirse, vuelve al nivel inicial sin insertar un cero. | 2–20 etapas; 1–30 s/etapa; peak hold 0–60 s |
+| `edge` / `build_deny` | Dos nombres equivalentes y neutrales: sube desde el `denyIntensity` explícito hasta `peakIntensity`, sostiene, vuelve al piso y lo sostiene. | build 1–30 s; peak hold 0–60 s; drop 0–30 s; floor hold 1–60 s |
+
+Los tiempos son enteros acotados; no se permiten pasos de longitud cero, más de 100 pasos compilados, dispositivos duplicados ni canales duplicados en una pista. La suma temporal de cada ciclo procede directamente de sus pasos, sin redondear duraciones. Los patrones se validan después contra el dispositivo, accesorio y techos configurados exactamente igual que una pista escrita a mano. La vista previa sigue siendo la forma segura de inspeccionar la compilación sin salida física.
 
 ## Lo que hace cada juguete
 
@@ -118,8 +138,8 @@ Railway recomienda generar secretos en la plantilla, describir cada variable y c
 - `lovense_status`: conexión y estado veraz de la sesión.
 - `lovense_list_devices`: cada dispositivo, alias estable, batería, conexión, `apiChannels`, `supportedChannels` (alias de compatibilidad), `manualOrAppFeatures`, fuente/verificación, accesorio y techos.
 - `lovense_configure_device`: declara alias, accesorio Spinel y techos; no mueve ningún dispositivo.
-- `lovense_preview`: valida una sesión coordinada y muestra el mapeo sin salida física; `dryRun` no envía ninguna orden.
-- `lovense_live_start`: inicia una pista independiente por dispositivo sobre un reloj sincronizado; usa la ventana predeterminada de una hora y nunca supera dos horas.
+- `lovense_preview`: acepta `tracks` o `patternTracks`, valida la sesión coordinada y muestra la partitura compilada/mapeada sin salida física; `dryRun` no envía ninguna orden.
+- `lovense_live_start`: acepta `tracks` o `patternTracks` e inicia una pista independiente por dispositivo sobre un reloj sincronizado; usa la ventana predeterminada de una hora y nunca supera dos horas.
 - `lovense_live_status`: objetivos, niveles ordenados, aceptación de despacho separada de confirmación física, registro por paso/error, conexión, batería, hold y reloj.
 - `lovense_live_adjust`: cambia canales concretos de dispositivos concretos sin reiniciar el reloj.
 - `lovense_live_extend`: amplía la sesión sin superar dos horas.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as z from "zod/v4";
-import { actionSchema } from "../src/mcp-server.js";
+import { actionSchema, patternTrackSchema } from "../src/mcp-server.js";
 
 test("non-Stroke actions require an integer intensity in their native range", () => {
   for (const fn of ["Vibrate", "Rotate", "Thrusting", "Fingering", "Suction", "Oscillate"] as const) {
@@ -41,4 +41,24 @@ test("published action JSON Schema is a strict discriminated union", () => {
   assert.equal(pump?.properties?.intensity?.maximum, 3);
   assert.deepEqual(stroke?.required, ["function", "strokeMin", "strokeMax"]);
   assert.equal(stroke?.additionalProperties, false);
+});
+
+test("pattern tracks publish a strict, bounded discriminated union", () => {
+  const constant = {
+    device: "spinel", shape: "constant", holdSeconds: 4,
+    channels: [{ function: "Vibrate", intensity: 7 }, { function: "Thrusting", intensity: 12 }],
+  };
+  assert.equal(patternTrackSchema.safeParse(constant).success, true);
+  assert.equal(patternTrackSchema.safeParse({ ...constant, channels: [{ function: "Heat", intensity: 7 }] }).success, false);
+  assert.equal(patternTrackSchema.safeParse({ ...constant, channels: [{ function: "Vibrate" }] }).success, false);
+  assert.equal(patternTrackSchema.safeParse({ ...constant, channels: [{ function: "Vibrate", intensity: 21 }] }).success, false);
+  assert.equal(patternTrackSchema.safeParse({ ...constant, extra: true }).success, false);
+
+  const schema = z.toJSONSchema(patternTrackSchema) as {
+    oneOf?: Array<{ additionalProperties?: boolean; properties?: { shape?: { const?: string } }; required?: string[] }>;
+  };
+  assert.equal(schema.oneOf?.length, 6);
+  const edge = schema.oneOf?.find((entry) => entry.properties?.shape?.const === "edge");
+  assert.equal(edge?.additionalProperties, false);
+  assert.deepEqual(edge?.required, ["device", "shape", "channels", "buildSeconds", "peakHoldSeconds", "dropSeconds", "denySeconds"]);
 });

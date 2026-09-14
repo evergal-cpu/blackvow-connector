@@ -6,6 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
 import { EnsembleRuntime, type EnsemblePlan } from "./ensemble-runtime.js";
 import type { LovenseClient } from "./lovense-client.js";
+import { compilePatternPlan, type PatternTrackSpec } from "./pattern-compiler.js";
 import {
   DEFAULT_LIVE_SESSION_SECONDS,
   LOVENSE_FUNCTIONS,
@@ -61,6 +62,61 @@ const trackSchema = z.object({
   steps: z.array(stepSchema).min(1).max(100),
 });
 
+const patternFunctionSchema = z.enum(["Vibrate", "Rotate", "Thrusting", "Fingering", "Suction", "Oscillate"]);
+const patternChannelSchema = (levels: Record<string, string>) => z.array(z.strictObject({
+  function: patternFunctionSchema.describe("An explicit BLACKVOW 0-20 scalar channel; Heat, Turbo, Pump, Depth, and Stroke are not implicit pattern channels."),
+  ...Object.fromEntries(Object.entries(levels).map(([name, description]) => [
+    name,
+    z.number().int().min(0).max(20).describe(description),
+  ])),
+})).min(1).max(5);
+
+const constantPatternSchema = z.strictObject({
+  device: z.string().min(1), shape: z.literal("constant"),
+  channels: patternChannelSchema({ intensity: "Constant channel level from 0 to 20." }),
+  holdSeconds: z.number().int().min(1).max(60).describe("Seconds per constant cycle, from 1 to 60."),
+});
+const pulsePatternSchema = z.strictObject({
+  device: z.string().min(1), shape: z.literal("pulse"),
+  channels: patternChannelSchema({ onIntensity: "On level from 0 to 20.", offIntensity: "Off/floor level from 0 to 20; zero is an explicit pause." }),
+  onSeconds: z.number().int().min(1).max(60).describe("Seconds at every explicit onIntensity, from 1 to 60."),
+  offSeconds: z.number().int().min(1).max(60).describe("Seconds at every explicit offIntensity, from 1 to 60."),
+});
+const wavePatternSchema = z.strictObject({
+  device: z.string().min(1), shape: z.literal("wave"),
+  channels: patternChannelSchema({ lowIntensity: "Wave floor from 0 to 20.", highIntensity: "Wave peak from 0 to 20." }),
+  riseSeconds: z.number().int().min(1).max(30).describe("Interpolated rise duration, from 1 to 30 seconds."),
+  highHoldSeconds: z.number().int().min(0).max(60).describe("Peak hold, from 0 to 60 seconds."),
+  fallSeconds: z.number().int().min(1).max(30).describe("Interpolated fall duration, from 1 to 30 seconds."),
+  lowHoldSeconds: z.number().int().min(0).max(60).describe("Floor hold, from 0 to 60 seconds."),
+});
+const escalatePatternSchema = z.strictObject({
+  device: z.string().min(1), shape: z.literal("escalate"),
+  channels: patternChannelSchema({ startIntensity: "Starting level from 0 to 20.", endIntensity: "Ending level from 0 to 20." }),
+  stages: z.number().int().min(2).max(20).describe("Number of deterministic inclusive levels, from 2 to 20."),
+  stepSeconds: z.number().int().min(1).max(30).describe("Seconds for the initial stage and each later transition, from 1 to 30."),
+  peakHoldSeconds: z.number().int().min(0).max(60).describe("Additional hold at the final level, from 0 to 60 seconds."),
+});
+const buildDenyShape = (shape: "edge" | "build_deny") => z.strictObject({
+  device: z.string().min(1), shape: z.literal(shape),
+  channels: patternChannelSchema({
+    peakIntensity: "Build peak level from 0 to 20.",
+    denyIntensity: "Explicit floor from 0 to 20. Each loop builds from this floor to the peak, then returns to it; zero is an explicit pause.",
+  }),
+  buildSeconds: z.number().int().min(1).max(30).describe("Interpolated floor-to-peak build, from 1 to 30 seconds."),
+  peakHoldSeconds: z.number().int().min(0).max(60).describe("Peak hold, from 0 to 60 seconds."),
+  dropSeconds: z.number().int().min(0).max(30).describe("Peak-to-floor transition, from 0 to 30 seconds; zero is immediate but does not insert a Stop."),
+  denySeconds: z.number().int().min(1).max(60).describe("Floor hold, from 1 to 60 seconds."),
+});
+export const patternTrackSchema = z.discriminatedUnion("shape", [
+  constantPatternSchema,
+  pulsePatternSchema,
+  wavePatternSchema,
+  escalatePatternSchema,
+  buildDenyShape("edge"),
+  buildDenyShape("build_deny"),
+]);
+
 function textResult(message: string, structuredContent?: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: message }], ...(structuredContent ? { structuredContent } : {}) };
 }
@@ -70,8 +126,23 @@ function toolError(error: unknown) {
   return { isError: true, content: [{ type: "text" as const, text: message }] };
 }
 
-function planFrom(input: { durationSeconds: number; tracks: unknown[]; resumeOnReconnect: boolean }): EnsemblePlan {
-  return input as EnsemblePlan;
+function planFrom(input: {
+  durationSeconds: number;
+  tracks?: unknown[];
+  patternTracks?: unknown[];
+  resumeOnReconnect: boolean;
+}, liveSessionCeiling: number): EnsemblePlan {
+  const hasTracks = Array.isArray(input.tracks);
+  const hasPatternTracks = Array.isArray(input.patternTracks);
+  if (hasTracks === hasPatternTracks) throw new Error("Provide exactly one of tracks or patternTracks.");
+  if (hasPatternTracks) {
+    return compilePatternPlan({
+      durationSeconds: input.durationSeconds,
+      patternTracks: input.patternTracks as PatternTrackSpec[],
+      resumeOnReconnect: input.resumeOnReconnect,
+    }, liveSessionCeiling);
+  }
+  return { durationSeconds: input.durationSeconds, tracks: input.tracks as EnsemblePlan["tracks"], resumeOnReconnect: input.resumeOnReconnect };
 }
 
 export function createLovenseMcpServer(client: LovenseClient, ensemble: EnsembleRuntime, limits: SafetyLimits): McpServer {
@@ -121,30 +192,35 @@ export function createLovenseMcpServer(client: LovenseClient, ensemble: Ensemble
 
   server.registerTool("lovense_preview", {
     title: "Preview a coordinated BLACKVOW session",
-    description: "Use this to validate explicit devices, independent channel curves, attachment rules, ceilings, and mapped output before starting. An omitted duration uses the default one-hour live-session window: a session envelope in which the score can loop and change, not one unchanging command. Short bounded tests must supply an explicit duration. This never actuates a device.",
+    description: "Use this to validate explicit devices, independent channel curves, attachment rules, ceilings, and mapped output before starting. Provide either canonical tracks or concise patternTracks (constant, pulse, wave, escalate, edge/build_deny), never both. Pattern tracks compile deterministically into the same canonical steps and never send Lovense Pattern commands. An omitted duration uses the default one-hour live-session window: a looping session envelope. Short bounded tests must supply an explicit duration. This never actuates a device.",
     inputSchema: {
       durationSeconds: z.number().int().min(2).max(liveSessionCeiling).optional().default(defaultLiveSeconds)
         .describe("Session envelope in seconds. Omit for the default one-hour live-session window; maximum 7200 seconds. Supply an explicit duration for short bounded tests."),
-      tracks: z.array(trackSchema).min(1).max(16), resumeOnReconnect: z.boolean().optional().default(false),
+      tracks: z.array(trackSchema).min(1).max(16).optional(),
+      patternTracks: z.array(patternTrackSchema).min(1).max(16).optional()
+        .describe("Neutral high-level patterns compiled into canonical BLACKVOW tracks. Every device and channel remains explicit."),
+      resumeOnReconnect: z.boolean().optional().default(false),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
   }, async (input) => {
-    try { return textResult("Validated the BLACKVOW session preview. No physical command was sent.", ensemble.preview(planFrom(input))); }
+    try { return textResult("Validated the BLACKVOW session preview. No physical command was sent.", ensemble.preview(planFrom(input, liveSessionCeiling))); }
     catch (error) { return toolError(error); }
   });
 
   server.registerTool("lovense_live_start", {
     title: "Start a coordinated BLACKVOW live session",
-    description: `Use this only with active consent to start independent, synchronized device tracks in the background. Every track names a device. Omitting duration uses the default one-hour live-session window: a session envelope in which the score can loop and change between conversational turns, not one unchanging command for an hour. Short bounded tests must supply an explicit duration. The ceiling is ${Math.round(liveSessionCeiling / 60)} minutes.`,
+    description: `Use this only with active consent to start independent, synchronized device tracks in the background. Provide either canonical tracks or concise patternTracks (constant, pulse, wave, escalate, edge/build_deny), never both. Pattern tracks compile into canonical steps before validation and dispatch; they never bypass BLACKVOW with Lovense Pattern or opaque loop commands. Every track names a device and every channel is explicit. Omitting duration uses the default one-hour live-session window. Short bounded tests must supply an explicit duration. The ceiling is ${Math.round(liveSessionCeiling / 60)} minutes.`,
     inputSchema: {
       durationSeconds: z.number().int().min(2).max(liveSessionCeiling).optional().default(defaultLiveSeconds)
         .describe("Session envelope in seconds. Omit for the default one-hour live-session window; maximum 7200 seconds. Supply an explicit duration for short bounded tests."),
-      tracks: z.array(trackSchema).min(1).max(16),
+      tracks: z.array(trackSchema).min(1).max(16).optional(),
+      patternTracks: z.array(patternTrackSchema).min(1).max(16).optional()
+        .describe("Neutral high-level patterns compiled into canonical BLACKVOW tracks. Every device and channel remains explicit."),
       resumeOnReconnect: z.boolean().optional().default(false).describe("When true, a disconnect hold may resume automatically after every target reconnects. Default false never silently resumes."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
   }, async (input) => {
-    try { return textResult("Started the coordinated BLACKVOW live session.", ensemble.start(planFrom(input))); }
+    try { return textResult("Started the coordinated BLACKVOW live session.", ensemble.start(planFrom(input, liveSessionCeiling))); }
     catch (error) { return toolError(error); }
   });
 
