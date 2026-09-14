@@ -150,7 +150,7 @@ export function createLovenseMcpServer(client: LovenseClient, ensemble: Ensemble
 
   server.registerTool("lovense_live_status", {
     title: "Read the BLACKVOW live lane",
-    description: "Use this to read targets, commanded channels, battery, connection, dispatch acceptance, confirmation limits, hold state, and deadline. This never actuates a device.",
+    description: "Use this to read targets, commanded channels, battery, connection, API/dispatch acceptance separately from unconfirmed physical output, per-step dispatch/error logs, hold state, and deadline. This never actuates a device.",
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
   }, async () => textResult("Returned the BLACKVOW live-session state.", ensemble.status()));

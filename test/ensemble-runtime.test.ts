@@ -12,11 +12,24 @@ function harness() {
     ],
   };
   const commands: Array<{ command: Record<string, unknown>; targetIds: string[] }> = [];
+  let nextFailure: Error | null = null;
   const client = {
     status: () => ({ connectionState: "connected", lastError: "", deviceInfo }),
-    sendCommand: (command: Record<string, unknown>, targetIds: string[]) => commands.push({ command, targetIds }),
+    sendCommand: (command: Record<string, unknown>, targetIds: string[]) => {
+      if (nextFailure) {
+        const error = nextFailure;
+        nextFailure = null;
+        throw error;
+      }
+      commands.push({ command, targetIds });
+    },
   };
-  return { runtime: new EnsembleRuntime(client as never, { maxCommandSeconds: 7200 }), commands, deviceInfo };
+  return {
+    runtime: new EnsembleRuntime(client as never, { maxCommandSeconds: 7200 }),
+    commands,
+    deviceInfo,
+    failNext: (message = "mock dispatch failure") => { nextFailure = new Error(message); },
+  };
 }
 
 test("discovery distinguishes Lush and Spinel with announced channels", () => {
@@ -76,6 +89,114 @@ test("coordinated session dispatches distinct Lush and Spinel tracks", () => {
   assert.deepEqual(commands.slice(0, 2).map((entry) => [entry.targetIds[0], entry.command.action]), [
     ["lush-1", "Vibrate:7"], ["spinel-1", "Thrusting:14,Vibrate:4"],
   ]);
+  runtime.close();
+});
+
+test("a constant Spinel step receives a lease for the remaining session instead of five seconds", () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  runtime.start({ durationSeconds: 60, tracks: [{
+    device: "spinel",
+    steps: [{ actions: [{ function: "Vibrate", intensity: 8 }, { function: "Thrusting", intensity: 12 }], holdSeconds: 60 }],
+  }] });
+  assert.equal(commands[0]?.command.action, "Vibrate:8,Thrusting:12");
+  assert.ok(Number(commands[0]?.command.timeSec) >= 59);
+  assert.equal(commands[0]?.command.stopPrevious, 1);
+  runtime.close();
+});
+
+test("identical consecutive Spinel steps do not redispatch at their boundary", async () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  runtime.start({ durationSeconds: 10, tracks: [{
+    device: "spinel",
+    steps: [
+      { actions: [{ function: "Vibrate", intensity: 8 }, { function: "Thrusting", intensity: 12 }], holdSeconds: 1 },
+      { actions: [{ function: "Vibrate", intensity: 8 }, { function: "Thrusting", intensity: 12 }], holdSeconds: 1 },
+    ],
+  }] });
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(commands.filter((entry) => entry.command.action !== "Stop").length, 1);
+  runtime.close();
+});
+
+test("Spinel step changes replace both channels atomically without a preliminary stop", async () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  runtime.start({ durationSeconds: 10, tracks: [{
+    device: "spinel",
+    steps: [
+      { actions: [{ function: "Vibrate", intensity: 5 }, { function: "Thrusting", intensity: 9 }], holdSeconds: 1 },
+      { actions: [{ function: "Vibrate", intensity: 11 }, { function: "Thrusting", intensity: 16 }], holdSeconds: 2 },
+    ],
+  }] });
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.deepEqual(commands.slice(0, 2).map((entry) => [entry.command.action, entry.command.stopPrevious]), [
+    ["Vibrate:5,Thrusting:9", 1],
+    ["Vibrate:11,Thrusting:16", 0],
+  ]);
+  assert.equal(commands.slice(0, 2).some((entry) => entry.command.action === "Stop"), false);
+  runtime.close();
+});
+
+test("an explicit zero-output step is the only timeline step that pauses output", async () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  runtime.start({ durationSeconds: 10, tracks: [{
+    device: "spinel",
+    steps: [
+      { actions: [{ function: "Vibrate", intensity: 5 }, { function: "Thrusting", intensity: 9 }], holdSeconds: 1 },
+      { actions: [{ function: "Vibrate", intensity: 0 }, { function: "Thrusting", intensity: 0 }], holdSeconds: 2 },
+    ],
+  }] });
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(commands[1]?.command.action, "Vibrate:0,Thrusting:0");
+  assert.equal(commands[1]?.command.stopPrevious, 0);
+  runtime.close();
+});
+
+test("a failed replacement leaves the previous session authoritative and does not stop it", () => {
+  const { runtime, commands, failNext } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  runtime.start({ durationSeconds: 30, tracks: [{ device: "spinel", steps: [{ actions: [{ function: "Vibrate", intensity: 8 }, { function: "Thrusting", intensity: 12 }], holdSeconds: 30 }] }] });
+  failNext("replacement rejected");
+  assert.throws(() => runtime.start({ durationSeconds: 30, tracks: [{ device: "spinel", steps: [{ actions: [{ function: "Vibrate", intensity: 10 }, { function: "Thrusting", intensity: 15 }], holdSeconds: 30 }] }] }), /replacement rejected/);
+  const status = runtime.status();
+  assert.equal(status.sessionId, "1");
+  assert.deepEqual((status.targets as Array<Record<string, unknown>>)[0]?.commandedLevels, [
+    { function: "Vibrate", intensity: 8 }, { function: "Thrusting", intensity: 12 },
+  ]);
+  assert.equal(commands.some((entry) => entry.command.action === "Stop"), false);
+  const log = status.dispatchLog as Array<Record<string, unknown>>;
+  assert.deepEqual([log.at(-1)?.sessionId, log.at(-1)?.stepIndex, log.at(-1)?.state, log.at(-1)?.error], ["2", 0, "failed", "replacement rejected"]);
+  runtime.close();
+});
+
+test("a successful replacement updates in place and reports accepted but unconfirmed output", () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  const plan = { durationSeconds: 30, tracks: [{ device: "spinel", steps: [{ actions: [{ function: "Vibrate" as const, intensity: 8 }, { function: "Thrusting" as const, intensity: 12 }], holdSeconds: 30 }] }] };
+  runtime.start(plan);
+  const status = runtime.start(plan);
+  assert.equal(status.sessionId, "2");
+  assert.equal(commands[1]?.command.stopPrevious, 0);
+  assert.equal(commands.some((entry) => entry.command.action === "Stop"), false);
+  const target = (status.targets as Array<Record<string, unknown>>)[0]!;
+  assert.deepEqual(target.apiAcceptance, target.dispatch);
+  assert.equal(target.outputState, "accepted_unconfirmed");
+  assert.equal(target.confirmedActive, false);
+  const log = status.dispatchLog as Array<Record<string, unknown>>;
+  assert.deepEqual([log.at(-1)?.sessionId, log.at(-1)?.stepIndex, log.at(-1)?.reason, log.at(-1)?.state], ["2", 0, "start", "accepted"]);
+  runtime.close();
+});
+
+test("a replacement that drops a Spinel channel explicitly zeros it in the atomic update", () => {
+  const { runtime, commands } = harness();
+  runtime.configureProfile({ device: "spinel", attachment: "straight" });
+  runtime.start({ durationSeconds: 30, tracks: [{ device: "spinel", steps: [{ actions: [{ function: "Vibrate", intensity: 8 }, { function: "Thrusting", intensity: 12 }], holdSeconds: 30 }] }] });
+  runtime.start({ durationSeconds: 30, tracks: [{ device: "spinel", steps: [{ actions: [{ function: "Vibrate", intensity: 6 }], holdSeconds: 30 }] }] });
+  assert.equal(commands[1]?.command.action, "Vibrate:6,Thrusting:0");
+  assert.equal(commands[1]?.command.stopPrevious, 0);
   runtime.close();
 });
 

@@ -60,8 +60,12 @@ Lovense Remote 7.71.0 o posterior acepta una matriz de IDs. El conector envía u
 - Esa hora es un sobre en el que cada pista puede repetir su partitura y cambiar mediante ajustes; no es una única orden constante.
 - Las pruebas breves proporcionan una duración explícita. Ninguna sesión ni extensión puede superar 7200 segundos.
 - Cada dispositivo tiene una pista explícita e independiente dentro del reloj compartido.
+- Una salida no cambia en los límites de pasos idénticos. El lease de la orden cubre el resto del sobre de sesión, por lo que no depende de redispatches periódicos para continuar.
+- Un cambio real reemplaza en una sola orden el estado completo de canales de la pista con `stopPrevious: 0`; un canal omitido por la nueva partitura se convierte en cero explícito. Solo una salida cero, Hold, Stop, desconexión o vencimiento debe crear una pausa.
+- Una sesión de reemplazo se confirma como activa únicamente después de aceptar su primer despacho. Si ese despacho falla, la sesión anterior no se borra.
 - `resumeOnReconnect` es `false` por defecto. Una desconexión provoca hold y nunca un reinicio silencioso.
 - Hold envía Stop a todos los objetivos y conserva la partitura. Resume exige consentimiento nuevo y reconexión verificada.
 - `lovense_stop_device` detiene y elimina solo la pista nombrada; `lovense_stop_all` detiene y limpia inmediatamente toda la sesión.
+- `lovense_live_status` separa aceptación técnica (`dispatch`/`apiAcceptance`) de actividad física confirmada (`confirmedActive`, siempre `false` sin evidencia externa) y expone un registro acotado por paso con errores de despacho.
 
 Fuentes: [Standard API](https://developer.lovense.com/docs/standard-solutions/standard-api), [Standard Socket API](https://developer.lovense.com/docs/standard-solutions/socket-api) y [catálogo oficial](https://www.lovense.com/compare?toyid=hush).

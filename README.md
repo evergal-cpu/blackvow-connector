@@ -29,6 +29,8 @@ Un conector privado de Lovense para ChatGPT y otros clientes MCP. Está pensado 
 - Sesiones coordinadas con una pista independiente por dispositivo: Lush y Spinel pueden seguir curvas distintas en el mismo reloj.
 - Ventana predeterminada de sesión en vivo de una hora (**default one-hour live-session window**), ampliable hasta 120 minutos y ejecutada por el servidor entre turnos del chat. Es el sobre temporal de una partitura que puede repetirse y cambiar, no una orden inmóvil durante una hora.
 - Ajuste y extensión sin introducir una parada intencional; `hold` detiene la salida pero conserva la partitura.
+- Control continuo: cada orden conserva un lease hasta el final del sobre de sesión; un cambio de paso reemplaza el estado completo de canales sin una parada previa, y pasos consecutivos idénticos no se vuelven a despachar.
+- Reemplazo transaccional de sesión: la sesión anterior no se borra hasta que la primera orden de la nueva haya sido aceptada; si falla, la anterior sigue siendo la autoridad.
 - Vista previa seca que valida y muestra el mapeo completo sin enviar ninguna orden física.
 - Techos opcionales por dispositivo/canal; el valor predeterminado real es 100%, por lo que 20/20 llega al máximo permitido por Lovense Remote.
 - Tres interrupciones separadas: conservar sesión, detener un dispositivo, o detener y limpiar todo.
@@ -50,6 +52,8 @@ La lista y los rangos proceden de la [Standard API oficial de Lovense](https://d
 Las pruebas breves deben proporcionar siempre una duración explícita. La sesión completa nunca puede superar 7200 segundos, incluso después de extensiones. `resumeOnReconnect` vale `false` por defecto: una desconexión pone la sesión en hold y no existe reinicio silencioso. `lovense_resume` exige consentimiento activo nuevo y que todos los objetivos vuelvan a estar conectados.
 
 Cada dispositivo tiene una sola pista y cada pista exige un alias estable o ID explícito. Las pistas comparten reloj, pero sus pasos y canales son independientes. Una respuesta `accepted` o `queued` solo describe la aceptación técnica de la orden; la Standard API no confirma movimiento físico. La confirmación corporal o visual debe reportarse por separado.
+
+Cada despacho lleva un lease que cubre el tiempo restante del sobre. Los cambios de paso envían todos los canales de esa pista en una sola orden con `stopPrevious: 0`, incluidos ceros explícitos para canales que deben apagarse. Así, el estado anterior continúa hasta que llega su sustituto; solo un paso explícito con salida cero, `lovense_hold`, una parada, una desconexión o el vencimiento crea una pausa. Pasos consecutivos con la misma salida mapeada no se redispatchan. `lovense_live_status` conserva un registro acotado de hasta 200 despachos/errores con sesión, dispositivo, paso, ciclo, fase, motivo, lease y resultado.
 
 ## Lo que hace cada juguete
 
@@ -116,7 +120,7 @@ Railway recomienda generar secretos en la plantilla, describir cada variable y c
 - `lovense_configure_device`: declara alias, accesorio Spinel y techos; no mueve ningún dispositivo.
 - `lovense_preview`: valida una sesión coordinada y muestra el mapeo sin salida física; `dryRun` no envía ninguna orden.
 - `lovense_live_start`: inicia una pista independiente por dispositivo sobre un reloj sincronizado; usa la ventana predeterminada de una hora y nunca supera dos horas.
-- `lovense_live_status`: objetivos, niveles ordenados, aceptación de despacho, conexión, batería, hold y reloj.
+- `lovense_live_status`: objetivos, niveles ordenados, aceptación de despacho separada de confirmación física, registro por paso/error, conexión, batería, hold y reloj.
 - `lovense_live_adjust`: cambia canales concretos de dispositivos concretos sin reiniciar el reloj.
 - `lovense_live_extend`: amplía la sesión sin superar dos horas.
 - `lovense_hold`: envía Stop pero conserva la sesión.
