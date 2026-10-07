@@ -29,3 +29,30 @@ test("persists device state encrypted and rejects the wrong key", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("serializes concurrent saves and preserves the final state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "lilazul-lovense-concurrent-test-"));
+  const path = join(directory, "state.enc");
+  try {
+    const store = new EncryptedStateStore(path, "another very long encryption secret for tests");
+    const states = Array.from({ length: 50 }, (_, index) => ({
+      version: 2 as const,
+      deviceInfo: {
+        online: true,
+        appType: "remote",
+        appVersion: "7",
+        platform: "ios",
+        updatedAt: `2026-10-07T00:00:${String(index).padStart(2, "0")}Z`,
+        toys: [],
+      },
+      deviceProfiles: [],
+    }));
+
+    await Promise.all(states.map((state) => store.save(state)));
+
+    assert.deepEqual(await store.load(), states.at(-1));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

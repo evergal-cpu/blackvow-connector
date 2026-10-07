@@ -96,14 +96,18 @@ export class LovenseClient {
       this.lastError = error.message;
     });
     this.socket.on("basicapi_update_device_info_tc", (value: unknown) => {
-      void this.updateDeviceInfo(parsePayload(value));
+      void this.updateDeviceInfo(parsePayload(value)).catch((error) => {
+        this.recordBackgroundError(error, "Could not update device information.");
+      });
     });
     this.socket.on("basicapi_update_app_online_tc", (value: unknown) => {
       const payload = parsePayload(value);
       if (this.deviceInfo && typeof payload.online === "boolean") {
         this.deviceInfo.online = payload.online;
         this.deviceInfo.updatedAt = new Date().toISOString();
-        void this.persist();
+        void this.persist().catch((error) => {
+          this.recordBackgroundError(error, "Could not persist app online state.");
+        });
       }
     });
   }
@@ -133,6 +137,10 @@ export class LovenseClient {
     await this.options.store.save(state);
   }
 
+  private recordBackgroundError(error: unknown, fallback: string): void {
+    this.lastError = error instanceof Error ? error.message : fallback;
+  }
+
   controlProfiles(): DeviceControlProfile[] {
     return [...this.deviceProfiles.values()].map((profile) => ({ ...profile, ceilings: { ...profile.ceilings } }));
   }
@@ -140,7 +148,7 @@ export class LovenseClient {
   setControlProfile(profile: DeviceControlProfile): void {
     this.deviceProfiles.set(profile.deviceId, { ...profile, ceilings: { ...profile.ceilings } });
     void this.persist().catch((error) => {
-      this.lastError = error instanceof Error ? error.message : "Could not persist the device profile.";
+      this.recordBackgroundError(error, "Could not persist the device profile.");
     });
   }
 

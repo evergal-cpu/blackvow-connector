@@ -12,6 +12,7 @@ interface Envelope {
 
 export class EncryptedStateStore {
   private readonly key: Buffer;
+  private saveQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly filePath: string, secret: string) {
     this.key = createHash("sha256").update(secret, "utf8").digest();
@@ -34,11 +35,18 @@ export class EncryptedStateStore {
     }
   }
 
-  async save(state: PersistedState): Promise<void> {
+  save(state: PersistedState): Promise<void> {
+    const serializedState = JSON.stringify(state);
+    const operation = this.saveQueue.then(() => this.writeState(serializedState));
+    this.saveQueue = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async writeState(serializedState: string): Promise<void> {
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, iv);
     const ciphertext = Buffer.concat([
-      cipher.update(JSON.stringify(state), "utf8"),
+      cipher.update(serializedState, "utf8"),
       cipher.final(),
     ]);
     const envelope: Envelope = {
@@ -48,7 +56,7 @@ export class EncryptedStateStore {
       ciphertext: ciphertext.toString("base64"),
     };
     await mkdir(dirname(this.filePath), { recursive: true });
-    const temporary = `${this.filePath}.${process.pid}.tmp`;
+    const temporary = `${this.filePath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
     await writeFile(temporary, JSON.stringify(envelope), { encoding: "utf8", mode: 0o600 });
     await rename(temporary, this.filePath);
   }
